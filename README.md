@@ -10,7 +10,8 @@ A book and C++ library for Electrical Engineering learning
 
 # Demos / Examples
 
-Create a simple electric circuit, compute the voltage drop at each resistor and save the drawn circuit as netlist format (.txt)
+Draw a simple electric circuit on the GUI, compute the voltage drop at each resistor. 
+Load a netlist format (.txt) and compute the voltage drop at each resistor (no GUI, circuit data is from the netlist format).
 
 <img src="https://github.com/glanzkaiser/FreyaLab/blob/main/images/FreyaLab.gif" width="60%">
 
