@@ -3,11 +3,7 @@
 
 Circuit::~Circuit() // Destructor to automatically clean up memory when circuit goes out of scope
 {
-	/*for (int i = 0; i < nodes.size(); ++i)
-		delete nodes[i];
-
-	for (int i = 0; i < components.size(); ++i)
-		delete components[i];*/
+	/* calling resetCircuit() without clearing the vectors leaves them full of dangling pointers. The next time the circuit updates or shuts down, the destructor tries to free them again*/
 	resetCircuit();
 }
 
@@ -149,18 +145,14 @@ void Circuit::saveasNetlist() // function to save drawn components as netlist
 	std::ofstream outFile(filename);
 	if (outFile.is_open()) 
 	{
-		int i = 0, j=0;
+		int i = 1, j=1, n = 0;
 		for (Component* comp : components)
 		{
-			if (Resistor* resistor = dynamic_cast<Resistor*>(comp))
-			{
-				Node* term1 = resistor->getTerminal1();
-				Node* term2  = resistor->getTerminal2();
-				int r = term1->getId();
-				int c = term2->getId();
-				outFile << "R" << i << " " << r  << " " << c << " " << resistor->getValue() << endl;
-				i = i+1;
-			}
+			n += 1;
+		}
+		outFile << n-1 << " " << n << endl; 	
+		for (Component* comp : components)
+		{
 			if (VoltageSource* voltagesource = dynamic_cast<VoltageSource*>(comp))
 			{
 				Node* term1 = voltagesource->getTerminal1();
@@ -170,7 +162,15 @@ void Circuit::saveasNetlist() // function to save drawn components as netlist
 				outFile << "V" << j << " " << r  << " " << c << " " << voltagesource->getValue()  << endl;
 				j = j+1;
 			}
-			
+			if (Resistor* resistor = dynamic_cast<Resistor*>(comp))
+			{
+				Node* term1 = resistor->getTerminal1();
+				Node* term2  = resistor->getTerminal2();
+				int r = term1->getId();
+				int c = term2->getId();
+				outFile << "R" << i << " " << r  << " " << c << " " << resistor->getValue() << endl;
+				i = i+1;
+			}
 		}
 
 		outFile.close();
@@ -180,25 +180,17 @@ void Circuit::saveasNetlist() // function to save drawn components as netlist
 
 void Circuit::resetCircuit() // function to delete all created nodes and components
 {
+	// The Circuit class stores the same component pointer in more than one collection, for example, a master list std::vector<Component*> components and a specialized list like std::vector<Resistor*> resistors, deleting from both will trigger a double free.
 	// Clean up previous simulation layout
 	// 1. Delete all dynamically allocated components
-	for (Component* comp : components) 
+	for (auto comp : components)  
 	{
 		if (comp != nullptr) 
 		{
-			delete comp;
+			delete comp; // only execute the delete keyword on the master list that owns the memory
 		}
 	}
 	components.clear(); // Clear the vector elements
-
-	// 2. Delete all dynamically allocated nodes
-	for (Node* node : nodes) 
-	{
-		if (node != nullptr) 
-		{
-			delete node;
-		}
-	}
 	nodes.clear(); // Clear the vector elements
 }
 
