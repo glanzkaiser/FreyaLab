@@ -1,0 +1,127 @@
+I love my wife
+and I use GFreya OS
+
+The project is structured following clean Object-Oriented Programming (OOP) and Separation of Concerns (SoC) principles. It isolates low-level circuit physics, mathematical equation solving, raw text parsing, and analytical presentation into distinct, decoupled software modules.
+
+├── CircuitComponents.h / .cpp  <-- Base physics & companion modeling matrices
+├── math.h / .cpp               <-- Direct linear equations processor (LU & Pivot)
+├── FileParser.h / .cpp         <-- SPICE front-end lexical text reader
+├── DCCircuit.h / .cpp          <-- DC engine (Operating Point & Parameter Sweeps)
+├── ACCircuit.h / .cpp          <-- AC frequency domain parser & Bode matrix generator
+├── PulseCircuit.h / .cpp       <-- Time-domain microsecond transient tracker
+└── main.cpp                    <-- Core manager & dynamic router execution file
+
+
+[ SPICE Netlist File ] -> parsed by [ FileParser ] -> creates Component objects
+                                                              │
+                                                     [ Circuit Manager Selection ]
+                                                    (Checks V1 source signature)
+                                                              │
+                     ┌────────────────────────────────────────┼────────────────────────────────────────┐
+                     ▼                                        ▼                                        ▼
+             [ DCCircuit Engine ]                    [ ACCircuit Engine ]                   [ PulseCircuit Engine ]
+            • Static Operating Points                • Transient Snapshots                  • Dynamic Time Steps
+            • Parametric 0-12V Sweep                 • Decadic Frequency Sweeps             • Microsecond Trackers
+                     │                                        │                                        │
+                     └────────────────────────────────────────┼────────────────────────────────────────┘
+                                                              ▼
+                                             [ CircuitComponents::stamp() ]
+                                           (Applies Companion/Linear Stamps)
+                                                              ▼
+                                                   [ math::luFactorize() ]
+                                                   [ math::luSolve() ]
+                                                              ▼
+                                            [ Output Tables & Generated CSVs ]
+
+explain in detail the computation, formula, algorithm used to do the AC circuit analysis in ACCircuit.h and ACCircuit.cpp
+
+When runFrequencySweepAnalysis runs, it executes the following logic loop:
+
+Initialize Frequency = startFreq
+While Frequency <= endFreq:
+    1. Calculate Period T = 1.0 / Frequency
+    2. Set Time Step dt = T / 4.0
+    
+    3. [Step 1: Peak State Solution]
+       - Set current time = dt
+       - Clear G and B matrix containers
+       - Call stamp() on all components using dt and current time
+       - Solve G * statePeak = B using LU Decomposition
+       
+    4. [Step 2: Quadrature State Solution]
+       - Set current time = 2.0 * dt
+       - Clear G and B matrix containers
+       - Pass statePeak as the historical 'oldV' context vector
+       - Call stamp() on all components using dt and current time
+       - Solve G * stateQuarter = B using LU Decomposition
+       
+    5. [Polar Extraction]
+       - For each tracked Node/Branch:
+         Real = statePeak[i], Imag = stateQuarter[i]
+         Calculate Magnitude, Phase, and Decibels (dB)
+         
+    6. [Output & Log]
+       - Print row values to the terminal table
+       - Stream comma-separated metrics to bode_plot_data.csv
+       
+    7. [Logarithmic Increment]
+       - Frequency = Frequency * 10^(1.0 / pointsPerDecade)
+
+
+
+explain in detail the computation, formula, algorithm used to do the DC circuit analysis in DCCircuit.h and DCCircuit.cpp
+
+The DC Sweep systematically maps out circuit performance across an input span by placing the MNA solver loop inside a linear step parameter framework.
+
+Initialize: V1_value = startV (0.0V)
+While V1_value <= endV (12.0V):
+   1. sweepSource->setDCValue(V1_value)
+   2. Invoke solveMna(currentV, sweepV)
+      └─ Runs the entire Newton-Raphson loop to settle the circuit matrices
+   3. Write results out to text file row streams:
+      • dc_sweep_voltage.csv <- Write node values from sweepV[0] to sweepV[numNodes-1]
+      • dc_sweep_current.csv <- Compute and write currents for all elements
+      • dc_sweep_power.csv   <- Compute and write powers for all elements
+   4. Seed next guess step: currentV = sweepV  (Feed-forward optimization)
+   5. Step Value: V1_value += stepV (0.5V)
+
+
+explain in detail the computation, formula, algorithm used to do the PULSE circuit analysis in PulseCircuit.h and PulseCircuit.cpp
+
+The complete algorithm inside PulseCircuit::runPulseTransientAnalysis combines these modules into an iterative process:
+
+Initialize: time = 0.0s, oldV = [0.0, 0.0, ...]
+While time <= tEnd (durationMicroseconds):
+
+    1. Initialize Newton-Raphson Guess for this time-step: nrGuessV = oldV
+    2. Newton-Raphson Iteration Loop (Max 40 times):
+       a. Clear structural matrices G and B to 0.0
+       b. Loop through ALL components:
+          - VoltageSource: reads current time, evaluates PULSE logic, stamps G and B
+          - Resistor: stamps static conductances into G
+          - Capacitor: calculates Ieq using terminal values from oldV, stamps G and B
+          - Inductor: calculates Veq using current index value from oldV, stamps G and B
+          - Diode/BJT (if present): linearizes using values from nrGuessV, stamps G and B
+       c. Solve the matrix system: G * nrSolV = B (using math layer LU solver)
+       d. Calculate the convergence delta check: maxDelta = max(|nrSolV[i] - nrGuessV[i]|)
+       e. Update guess vector for next iteration: nrGuessV = nrSolV
+       f. If maxDelta < nrTolerance (1e-6), convergence is reached! Break out of NR loop.
+       
+    3. Update tracking state configurations:
+       - Save capacitor voltage for derivative calculation: prevVcVal = currentV[Node2]
+       - Assign completed converged timestep: currentV = nrSolV
+       
+    4. Post-Process Data and Log:
+       - Calculate approximate capacitor current: iC = C * (currentV[Node2] - prevVcVal) / dt
+       - Extract inductor current directly from branch current index: iL = currentV[k]
+       - Print row values cleanly formatted to the output terminal
+       
+    5. Advance Timeline: oldV = currentV, time += dt
+
+
+
+
+
+
+
+

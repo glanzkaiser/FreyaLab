@@ -1,0 +1,4 @@
+g++ -c implot.cpp implot_items.cpp
+ar rcs libimplot.a implot.o implot_items.o 
+Then put libimplot.a to /usr/lib
+Implot v1.1

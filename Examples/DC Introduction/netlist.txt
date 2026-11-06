@@ -1,0 +1,37 @@
+* =====================================================================
+* ADVANCED HIGH-SPEED TRANSIENT & PHASOR VALIDATION TESTBENCH NETLIST
+* =====================================================================
+* Format: [Type][Name] [Nodes...] [Value / Model Specification]
+* Node Map Reference: 
+*   0 / GND   = System Ground
+*   Input     = Node 1 (AC Input / Pulse Trigger Source Link)
+*   Base      = Node 2 (BJT Active Input Base Node)
+*   Collector = Node 3 (BJT Collector Output Node / Phase Inverted)
+*   Output    = Node 4 (Dynamic Loaded Output Port Vector)
+*   VCC       = Node 5 (Static DC System Rail Bus Power Delivery)
+* =====================================================================
+
+* 1. INDEPENDENT ACTIVE SOURCE EMITTERS
+V1 1 0 DC 5.0
+V2 2 0 DC 2.5
+
+* 2. SIGNAL ROUTING & CURRENT BIAS CORRIDORS
+R1 1 3 10k
+R2 1 4 1.2k
+R3 2 3 1k
+
+* 3. ADVANCED ACTIVE VERTICAL BIPOLAR TRANSISTOR
+Q1 4 3 0 npn
+
+* 4. HIGH-FREQUENCY FILTER CIRCUITS
+C1 4 5 4.7u
+L1 5 0 10m
+R4 5 0 50
+
+* 5. SOLID-STATE CLAMPING PROTECTION RING & MOSFET
+D1 4 1
+M1 5 4 0 nmos
+
+* =====================================================================
+* END OF NETLIST METRIC SPECIFICATION DESCRIPTOR BLOCK
+* =====================================================================
