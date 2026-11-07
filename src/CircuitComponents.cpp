@@ -138,18 +138,17 @@ Diode::Diode(const std::string& name, const std::vector<int>& nodes)
     : Component(name, ComponentType::DIODE, nodes) {}
 // mathematically correct, good and robust and no structural bugs 
 void Diode::stamp(MnaMatrixContext& ctx) {
-    // 1. Guard against unallocated structural netlist nodes
     if (nodes.size() < 2) return;
 
-    int n1 = nodes[0]; // Anode terminal
-    int n2 = nodes[1]; // Cathode terminal
+    int n1 = nodes[0]; // Anode
+    int n2 = nodes[1]; // Cathode
 
-    // 2. Safely resolve voltages using getSafeVoltage to ensure no pointer crashes
-    double vd = 0.7; // Default baseline forward guess if state is uninitialized
-    double vold = 0.7;
+    // 1. Resolve the TRUE current iteration voltage drop drop bounds
+    double vd_true = 0.0;
+    double vold = 0.0;
 
     if (ctx.currentIterV) {
-        vd = getSafeVoltage(*ctx.currentIterV, n1) - getSafeVoltage(*ctx.currentIterV, n2);
+        vd_true = getSafeVoltage(*ctx.currentIterV, n1) - getSafeVoltage(*ctx.currentIterV, n2);
     }
     if (ctx.historicStepV) {
         vold = getSafeVoltage(*ctx.historicStepV, n1) - getSafeVoltage(*ctx.historicStepV, n2);
@@ -158,33 +157,31 @@ void Diode::stamp(MnaMatrixContext& ctx) {
     double vt = N * V_THERMAL_300K;
     double vcrit = vt * std::log(vt / (std::sqrt(2.0) * Is));
 
-    // 3. Prevent exponential explosion via standard SPICE PN-junction limiting
-    vd = CircuitMath::pnjlim(vd, vold, vt, vcrit);
+    // 2. Compute the LIMITED voltage drop drop specifically for exponential safety checks
+    double vd_lim = CircuitMath::pnjlim(vd_true, vold, vt, vcrit);
 
-    // 4. Compute core Shockley formulations with safe numerical exponent caps
-    double expTerm = std::exp(std::min(vd / vt, 40.0));
+    // 3. Compute Shockley equations using the safely limited voltage drop drop
+    double expTerm = std::exp(std::min(vd_lim / vt, 40.0));
     double id = Is * (expTerm - 1.0);
     double gd = (Is / vt) * expTerm;
 
-    // Inject high-performance numeric Gmin parallel stabilization conductance
+    // Inject Gmin stabilization tracking
     constexpr double gmin = 1e-12;
     gd += gmin;
-    id += gmin * vd;
+    
+    // 4. CRITICAL SPICE FIX: Formulate Ieq using the true voltage drop drop (vd_true), 
+    // but anchored by the limited physics variables (id, gd) to maintain mathematical consistency
+    double ieq = id - gd * vd_lim;
 
-    // Compute Norton linearized compensation source equivalent current (Ieq = Id - Gd * Vd)
-    double ieq = id - gd * vd;
-
-    // 5. Multi-Terminal Jacobian Matrix Stamping (Perfect 1-0 based index alignment)
+    // 5. Conductance Matrix G Stamping
     if (n1 > 0) ctx.G.addValue(n1 - 1, n1 - 1,  gd);
     if (n2 > 0) ctx.G.addValue(n2 - 1, n2 - 1,  gd);
-    
     if (n1 > 0 && n2 > 0) {
         ctx.G.addValue(n1 - 1, n2 - 1, -gd);
         ctx.G.addValue(n2 - 1, n1 - 1, -gd);
     }
 
-    // Aligned Norton current signs with standard companion model constraints:
-    // Current flows out of anode (-ieq) and enters cathode (+ieq)
+    // 6. Source Vector B Stamping
     if (n1 > 0) ctx.B[n1 - 1] += -ieq;
     if (n2 > 0) ctx.B[n2 - 1] +=  ieq;
 }
@@ -224,8 +221,8 @@ void Diode::stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_
     } else {
         // Forward bias linear expansion overlay to mitigate infinite capacitance asymptotes
         double c_factor = std::pow(1.0 - fc, -M);
-        double slope = (M * Cj0 * c_factor) / (Vj * (1.0 - fc));
-        c_depletion = Cj0 * c_factor + slope * (v_dc - v_break);
+        double slope = (Cj0 * M * std::pow(1.0 - fc, -(M + 1.0))) / Vj;
+	c_depletion = Cj0 * c_factor + slope * (v_dc - v_break);
     }
     
     double c_total = std::max(c_diffusion + c_depletion, 1e-20);

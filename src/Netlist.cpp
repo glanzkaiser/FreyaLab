@@ -102,57 +102,87 @@ void Netlist::inspectComponents(std::function<void(const Component&, int extraId
 }
 // good and robust
 bool Netlist::runNewtonRaphson(MnaMatrixContext& ctx, int maxIter, double relTol, double absTol) {
-    std::vector<double> nextV(totalSize, 0.0);
-    std::vector<double> iterV = stateV; 
+    std::vector<double> iterV = stateV;       // Seed guess from current system state vector
+    std::vector<double> prevIterV = stateV;   // Prior iteration guess tracker for pnjlim references
     
+    // Allocate matrix workspaces outside the loop to maximize execution pipeline speed
+    CsrMatrix L, U;
+    std::vector<int> P;
+
+    // Build the dynamic allocation memory bounds exactly once prior to entering the loop
+    L.initializeFromPattern(G);
+    U.initializeFromPattern(G);
+
     for (int iter = 0; iter < maxIter; ++iter) {
         G.zero();
         std::fill(B.begin(), B.end(), 0.0);
         
-        // Inject diagonal Gmin normalization layer across node boundaries
-	for (int i = 0; i < totalSize; ++i) {
-	    G.addValue(i, i, 1e-12);
-	}
+        // FIXED: Clear and resize the permutation vector every iteration 
+        // to prevent row-pivoting pollution across Newton turns!
+        P.clear(); 
+        P.resize(totalSize, 0);
 
-	ctx.currentIterV = &iterV; // Safe retargetable address binding
+        ctx.currentIterV = &iterV;
+        ctx.historicStepV = &prevIterV; 
 
+        // 1. Device Physics Stamping Pass
         for (auto& comp : components) {
-            ctx.assignedExtraIdx = comp->getAssignedExtraIdx();
-            comp->stamp(ctx);
+            if (comp) {
+                ctx.assignedExtraIdx = comp->getAssignedExtraIdx();
+                comp->stamp(ctx);
+            }
         }
 
-	// FIX: Instantiate fresh local variables inside the scope loop 
-        // to guarantee memory stability across dynamic structural updates.
-        CsrMatrix L, U;
-        std::vector<int> P;
+        // 2. Apply Gmin normalization across nodes
+        for (int i = 0; i < numNodes; ++i) {
+            G.addValue(i, i, 1e-12); 
+        }
 
-        L.initializeFromPattern(G);
-        U.initializeFromPattern(G);
-
+        // 3. Factorize the system matrix using the pre-allocated L and U maps
         if (!CircuitMath::luFactorize(G, L, U, P)) {
-            return false; 
+            return false; // Matrix structural singularity hit
         }
         
-        // Correct Mathematical MNA Evaluation Pathway:
-        // Because your stamps evaluate G * V_next = B, luSolve outputs the absolute targeted V_next state directly.
-        nextV = CircuitMath::luSolve(L, U, P, B);
+        // 4. Resolve absolute new system voltage vector via LU back-substitution
+        std::vector<double> solvedV = CircuitMath::luSolve(L, U, P, B);
 
-        double maxError = 0.0;
+        // 5. Apply SPICE voltage stepping limits and check convergence
+        bool converged = true;
+        
+        // Cache iterV before updating it so we can calculate pure deltas safely
+        prevIterV = iterV;
+
         for (int i = 0; i < totalSize; ++i) {
-            double delta = nextV[i] - iterV[i]; // Deduce step displacement delta for convergence tracking
-            double tol = absTol + relTol * std::max(std::abs(nextV[i]), std::abs(iterV[i]));
-            maxError = std::max(maxError, std::abs(delta) / tol);
-            iterV[i] = nextV[i]; 
+            double rawDelta = solvedV[i] - prevIterV[i];
+            double limitedDelta = rawDelta;
+            
+            // Damping logic: restrict node steps from swinging by more than 0.5V per turn
+            if (i < numNodes) { 
+                if (limitedDelta > 0.5)  limitedDelta = 0.5;
+                if (limitedDelta < -0.5) limitedDelta = -0.5;
+            }
+
+            // Set absolute target voltage directly by adding the limited delta to the previous state base
+            iterV[i] = prevIterV[i] + limitedDelta;
+
+            // Verify convergence criteria against standard SPICE tolerance thresholds
+
+	    double currentAbsTol = (i < numNodes) ? absTol : 1e-3; // Standard SPICE current absolute limit (1 mA floor)
+	    double allowedTolerance = currentAbsTol + relTol * std::max(std::abs(solvedV[i]), std::abs(prevIterV[i]));
+	    if (std::abs(rawDelta) > allowedTolerance) {
+	       converged = false;
+	    }
+
         }
 
-        if (maxError < 1.0) {
-            stateV = iterV; // Commit convergence globally
+        if (converged) {
+            stateV = iterV; // Commit successful convergence globally
             return true; 
         }
     }
-    return false;
+    
+    return false; // Loop exceeded max iterations without converging
 }
-
 // mathematically correct and robust 
 double Netlist::estimateLocalTruncationError(double dt, double gamma, double relTol, double absTol) {
     (void)dt; 

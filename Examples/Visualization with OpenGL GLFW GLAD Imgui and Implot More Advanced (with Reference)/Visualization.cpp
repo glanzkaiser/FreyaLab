@@ -849,9 +849,9 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
             const auto& vc = pair.second;
             float canvasX = (vc.posX * zoomLevel) + scrollOffsetX;
             float canvasY = (vc.posY * zoomLevel) + scrollOffsetY;
-            ImGui::SetCursorPos(ImVec2(canvasX + 12.0f * zoomLevel, canvasY + 12.0f * zoomLevel));
+            ImGui::SetCursorPos(ImVec2(canvasX - 6.0f * zoomLevel, canvasY + 28.0f * zoomLevel));
             ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", vc.name.c_str());
-            ImGui::SetCursorPos(ImVec2(canvasX + 12.0f * zoomLevel, canvasY + 28.0f * zoomLevel));
+            ImGui::SetCursorPos(ImVec2(canvasX + 12.0f * zoomLevel, canvasY +28.0f * zoomLevel));
             ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%.2e", vc.scalarValue);
         }
 
@@ -861,7 +861,7 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
             float cx = vc.posX + blockW * 0.5f; 
             float cy = vc.posY + blockH * 0.5f;
             float p1x_local = -blockW * 0.5f; 
-            float p2x_local =  blockW * 0.5f;
+            float p2x_local =  -blockW * 0.1f;
             float rad = vc.rotationAngle * (float)M_PI / 180.0f;
             float cosA = std::cos(rad); float sinA = std::sin(rad);
 
@@ -881,9 +881,9 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
             std::transform(lowerNodeName.begin(), lowerNodeName.end(), lowerNodeName.begin(), [](unsigned char c){ return std::tolower(c); });
 
             for (const auto& pt : nodePair.second) {
-                ImGui::SetCursorPos(ImVec2(pt.first + 8.0f * zoomLevel, pt.second - 18.0f * zoomLevel));
+                ImGui::SetCursorPos(ImVec2(pt.first - 5.0f * zoomLevel, pt.second - 14.0f * zoomLevel));
                 if (lowerNodeName == "0" || lowerNodeName == "gnd" || lowerNodeName == "ground") {
-                    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 0.85f), "N:0 (GND)");
+                    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 0.85f), "GND");
                 } else {
                     ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 0.85f), "N:%s", nodeName.c_str());
                 }

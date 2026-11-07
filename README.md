@@ -60,7 +60,9 @@ FreyaLab has been benchmarked extensively against classic dense simulation frame
 
 # Demos / Examples
 
-Add a component, delete a component, Load a netlist format (.txt) and the DC operating point table will show the voltage drop, current, and power for each component.
+Add a component, delete a component, move the component, load/copy a SPICE netlist format (.txt) and the DC operating point table will show the voltage drop, current, and power for each component.
+
+<img src="https://github.com/glanzkaiser/FreyaLab/blob/main/images/FreyaLab1.png" width="73%">
 
 <img src="https://github.com/glanzkaiser/FreyaLab/blob/main/images/FreyaLabDC.gif" width="60%">
 

@@ -63,6 +63,7 @@ public:
     // ========================================================================
     // PUBLIC WORKSPACE STATE STORAGE CELLS & DATA REGISTERS
     // ========================================================================
+    Netlist* netlistPtr = nullptr;
     Netlist& netlist;
     FileParser parser;
     

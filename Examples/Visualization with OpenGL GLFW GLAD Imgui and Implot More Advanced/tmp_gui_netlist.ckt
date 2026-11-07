@@ -1,9 +1,0 @@
-* FreyaLab Modified Schematic Netlist Configuration Workspace
-C1 2 0 1e-05
-C_NEW1 1 0 1e-05
-R1 1 2 1000
-R2 1 2 5000
-R3 3 0 10000
-V1 1 0 5
-V2 2 3 2.5e-06
-V_NEW1 1 0 5
