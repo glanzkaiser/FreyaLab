@@ -38,13 +38,11 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
     double stopT = options.stopTime;
     
     double gamma = 2.0 - std::sqrt(2.0); // Optimal L-stable TR-BDF2 configuration parameter
-
     int currentExtraCount = netlist.getTotalSystemSize() - netlist.getNumNodes();
     
-    // Allocate context with direct vector references to prevent internal parsing de-synchronization
     MnaMatrixContext ctx{ 
-        const_cast<CsrMatrix&>(netlist.getGMatrix()), 
-        const_cast<std::vector<double>&>(netlist.getHistoricV()), 
+        netlist.getGMatrix(), 
+        netlist.getBVector(),
         &netlist.getStateV(), 
         &netlist.getHistoricV(), 
         &netlist.getMidpointV(), 
@@ -66,16 +64,13 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
             throw std::runtime_error("AC Transient baseline Operating Point diverged.");
         }
         
-        // Synchronize operational baseline states
         netlist.getHistoricV() = netlist.getStateV();
         
-        // Critical: Force components to calculate baseline history (q_hist_n / i_hist_n) at t=0
         netlist.inspectComponents([&ctx](const Component& comp, int extraIdx) {
             (void)extraIdx;
             const_cast<Component&>(comp).updateHistory(ctx);
         });
 
-        // Print true baseline t=0 starting coordinates
         const auto& initialState = netlist.getCurrentState();
         double vIn = (inputNode > 0 && static_cast<size_t>(inputNode - 1) < initialState.size()) ? initialState[inputNode - 1] : 0.0;
         double vOut = (outputNode > 0 && static_cast<size_t>(outputNode - 1) < initialState.size()) ? initialState[outputNode - 1] : 0.0;
@@ -89,9 +84,13 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
                 dt = stopT - t;
             }
 
+            // Hard safety ceiling check to protect against infinite scaling collapse
+            if (dt < options.minDt) {
+                throw std::runtime_error("Timestep crashed below minimum safety limit (stagnant matrix grid configuration).");
+            }
+
             std::vector<double> backupState = netlist.getStateV();
 
-            // Freeze charge layers across dynamic primitives before running integration steps
             netlist.inspectComponents([](const Component& comp, int extraIdx) {
                 (void)extraIdx;
                 const_cast<Component&>(comp).saveCheckpoint();
@@ -104,13 +103,12 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
             ctx.dt = dt;
             ctx.orderStep = 1;
             
-            // Re-bind references to defend against pointer alterations
             ctx.currentIterV = &netlist.getStateV();
             ctx.historicStepV = &netlist.getHistoricV();
             ctx.midpointStepV = &netlist.getMidpointV();
 
-            if (!netlist.runNewtonRaphson(ctx, 50, options.relTol, options.absTol)) {
-                dt = std::max(dt * 0.5, 1e-15); 
+            if (!netlist.runNewtonRaphson(ctx, options.maxIterations, options.relTol, options.absTol)) {
+                dt *= 0.5; // Cut step directly without clamping to allow termination
                 netlist.getStateV() = backupState; 
                 netlist.inspectComponents([](const Component& comp, int extraIdx) {
                     (void)extraIdx;
@@ -119,10 +117,8 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
                 continue;
             }
             
-            // Capture midpoint state solutions
             netlist.getMidpointV() = netlist.getStateV();
             
-            // Populate dynamic parameters for TR step (stores q_hist_nc / i_hist_nc)
             netlist.inspectComponents([&ctx](const Component& comp, int extraIdx) {
                 (void)extraIdx;
                 const_cast<Component&>(comp).updateHistory(ctx);
@@ -134,13 +130,12 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
             ctx.time = t + dt;
             ctx.orderStep = 2;
             
-            // Re-bind operational vector grid positions
             ctx.currentIterV = &netlist.getStateV();
             ctx.historicStepV = &netlist.getHistoricV();
             ctx.midpointStepV = &netlist.getMidpointV();
 
-            if (!netlist.runNewtonRaphson(ctx, 50, options.relTol, options.absTol)) {
-                dt = std::max(dt * 0.5, 1e-15);
+            if (!netlist.runNewtonRaphson(ctx, options.maxIterations, options.relTol, options.absTol)) {
+                dt *= 0.5;
                 netlist.getStateV() = backupState;
                 netlist.inspectComponents([](const Component& comp, int extraIdx) {
                     (void)extraIdx;
@@ -150,9 +145,9 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
             }
 
             // Local Truncation Error Validation Check
-            double error = netlist.estimateLocalTruncationError(dt, gamma,options.relTol, options.absTol);
-            if (error > options.relTol && dt > 1e-15) {
-                dt = std::max(dt * 0.5, 1e-15);
+            double error = netlist.estimateLocalTruncationError(dt, gamma, options.relTol, options.absTol);
+            if (error > options.relTol) {
+                dt *= 0.5;
                 netlist.getStateV() = backupState;
                 netlist.inspectComponents([](const Component& comp, int extraIdx) {
                     (void)extraIdx;
@@ -161,7 +156,7 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
                 continue;
             }
 
-            // Step accepted: Commit full point history profiles permanently
+            // Step accepted: Commit step updates permanently
             netlist.inspectComponents([&ctx](const Component& comp, int extraIdx) {
                 (void)extraIdx;
                 const_cast<Component&>(comp).updateHistory(ctx);
@@ -181,7 +176,7 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
 
             // Progressive adaptive timestep width adjustment bounds
             if (error < options.relTol * 0.5) {
-                dt = std::min(dt * 1.5, (stopT - t));
+                dt = std::min(dt * 1.5, options.maxDt);
             }
         }
     } catch (const std::exception& e) {
@@ -189,6 +184,8 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
     }
     std::cout << "====================================================================================\n" << std::endl;
 }
+
+
 
 void ACCircuit::runFrequencySweepAnalysis(double startFreq, double stopFreq, int pointsCount) {
     std::cout << "\n==============================================================================================\n"
@@ -217,7 +214,8 @@ void ACCircuit::runFrequencySweepAnalysis(double startFreq, double stopFreq, int
     CsrMatrixComplex A_complex, L_complex, U_complex;
     std::vector<int> P_complex;
     A_complex.initializeFromPattern(netlist.getGMatrix());
-
+    L_complex.initializeFromPattern(netlist.getGMatrix());
+    U_complex.initializeFromPattern(netlist.getGMatrix());
     std::vector<std::complex<double>> B_complex(systemSize, std::complex<double>(0.0, 0.0));
 
     double logStart = std::log10(std::max(startFreq, 1e-3));
@@ -230,6 +228,8 @@ void ACCircuit::runFrequencySweepAnalysis(double startFreq, double stopFreq, int
         double omega = 2.0 * M_PI * freq;
 
         A_complex.zero();
+        L_complex.zero();
+        U_complex.zero();
         std::fill(B_complex.begin(), B_complex.end(), std::complex<double>(0.0, 0.0));
 
         // Fully Automated AC Phasor Stamping Pass across all netlist elements

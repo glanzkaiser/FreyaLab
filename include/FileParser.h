@@ -13,9 +13,14 @@ private:
     int nodeCounter = 0;
 
     int getOrAssignNode(const std::string& nodeName);
+    // Modified: Now accepts the active netlist workspace to record string names dynamically
+    int getOrAssignNode(const std::string& nodeName, Netlist& netlist);
+
     double parseValue(const std::string& valStr);
     std::vector<int> parseNodes(const std::vector<std::string>& tokens, size_t count);
-    
+    // Modified: Now passes the working netlist reference down to internal assign routines
+    std::vector<int> parseNodes(const std::vector<std::string>& tokens, size_t count, Netlist& netlist);
+
     // Safely maps string tokens into matching internal gate enum options
     GateType parseGateType(const std::string& gateStr);
 

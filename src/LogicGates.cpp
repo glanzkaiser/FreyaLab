@@ -1,34 +1,40 @@
 #include "freyalab/LogicGates.h"
-#include <string>
+#include <bitset>
 
-uint8_t LogicGates::evaluateGate(GateType gate, uint8_t a, uint8_t b) {
-    // Keep operations strictly isolated within the 4-bit nibble space bounds (0x0F)
+// --- BUS MULTI-BIT ---
+uint8_t LogicGates::evaluateBusGate(GateType gate, uint8_t a, uint8_t b) {
+    uint8_t maskA = a & 0x0F;
+    uint8_t maskB = b & 0x0F;
+
     switch (gate) {
-        case GateType::NOT:
-            return (~a) & 0x0F;
-        case GateType::AND:
-            return (a & b) & 0x0F;
-        case GateType::OR:
-            return (a | b) & 0x0F;
-        case GateType::XOR:
-            return (a ^ b) & 0x0F;
-        case GateType::NAND:
-            return (~(a & b)) & 0x0F;
-        case GateType::NOR:
-            return (~(a | b)) & 0x0F;
-        case GateType::XNOR:
-            return (~(a ^ b)) & 0x0F;
-        default:
-            return 0x00;
+        case GateType::NOT:  return (~maskA) & 0x0F;
+        case GateType::AND:  return (maskA & maskB) & 0x0F;
+        case GateType::OR:   return (maskA | maskB) & 0x0F;
+        case GateType::XOR:  return (maskA ^ maskB) & 0x0F;
+        case GateType::NAND: return (~(maskA & maskB)) & 0x0F;
+        case GateType::NOR:  return (~(maskA | maskB)) & 0x0F;
+        case GateType::XNOR: return (~(maskA ^ maskB)) & 0x0F;
+        default:             return 0x00;
+    }
+}
+
+// --- SPICE MNA ---
+uint8_t LogicGates::evaluateScalarGate(GateType gate, double vA, double vB, double vThresh) {
+    uint8_t inA = (vA >= vThresh) ? 1 : 0;
+    uint8_t inB = (vB >= vThresh) ? 1 : 0;
+
+    switch (gate) {
+        case GateType::NOT:  return !inA;
+        case GateType::AND:  return inA & inB;
+        case GateType::OR:   return inA | inB;
+        case GateType::XOR:  return inA ^ inB;
+        case GateType::NAND: return !(inA & inB);
+        case GateType::NOR:  return !(inA | inB);
+        case GateType::XNOR: return !(inA ^ inB);
+        default:             return 0;
     }
 }
 
 std::string LogicGates::toBinary4Bit(uint8_t value) {
-    // Optimized fixed-size allocation lookup bypass to avoid unneeded loop iteration overhead
-    std::string s = "0000";
-    s[0] = ((value & 0x08) ? '1' : '0');
-    s[1] = ((value & 0x04) ? '1' : '0');
-    s[2] = ((value & 0x02) ? '1' : '0');
-    s[3] = ((value & 0x01) ? '1' : '0');
-    return s;
+    return std::bitset<4>(value & 0x0F).to_string();
 }

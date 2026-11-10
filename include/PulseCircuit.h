@@ -22,13 +22,17 @@ private:
 public:
     explicit PulseCircuit(Netlist& netlistInstance);
 
+    void detectAndPrintCauseEffectNodes(std::vector<int>& causevector, std::vector<int>& effectvector);
+
+    // Automatically scans the circuit topology, extracts Cause and Effect nodes, and maps them as differential measurement pairs relative to Ground (Node 0).
+    void autoGenerateMonitorPairs(std::vector<std::pair<int, int>>& monitorPairs);
     // Dynamic inspection to verify if the model space contains valid active elements
     bool isPulseCircuit();
 
     // Resolves a single standalone non-linear transient step handling dual-phase TR-BDF2 updates
     bool solveTransientStep(MnaMatrixContext& ctx, double targetTime, double currentDt, int stepPhase);
 
-    // Generates a fully generic pulse switching transient table tracking mapped nodes dynamically
-    void runPulseTransientAnalysis(const PulseSimulationOptions& options, int inputNode, int outputNode);
+    // Generates a comprehensive transient metric table and logs data into a CSV file. Evaluates custom differential node coordinate pairs dynamically.
+     void runPulseTransientAnalysis(const PulseSimulationOptions& options, const std::vector<std::pair<int, int>>& monitorPairs);
 };
 

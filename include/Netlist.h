@@ -6,6 +6,8 @@
 #include <memory>
 #include <string>
 #include <functional>
+#include <map>  
+#include <cmath>
 
 struct NetlistSimulationOptions {
     double startTime = 0.0;
@@ -33,9 +35,23 @@ private:
 
     void analyzeTopology();
 
+    std::map<int, std::string> nodeNameMap;
 public:
     Netlist() = default;
-    
+
+    void setNodeName(int nodeNum, const std::string& name) {
+        nodeNameMap[nodeNum] = name;
+    }
+
+    std::string getNodeName(int nodeNum) const {
+        if (nodeNum == 0) return "GND";
+        auto it = nodeNameMap.find(nodeNum);
+        if (it != nodeNameMap.end()) {
+            return it->second;
+        }
+        return "UNKNOWN";
+    }
+
     void addComponent(std::shared_ptr<Component> component);
     void buildSparsityPattern();
     bool runNewtonRaphson(MnaMatrixContext& ctx, int maxIter, double relTol, double absTol);

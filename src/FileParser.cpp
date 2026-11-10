@@ -24,6 +24,29 @@ int FileParser::getOrAssignNode(const std::string& nodeName) {
     return nodeCounter;
 }
 
+int FileParser::getOrAssignNode(const std::string& nodeName, Netlist& netlist) {
+    std::string upperName = nodeName;
+    std::transform(upperName.begin(), upperName.end(), upperName.begin(), ::toupper);
+
+    if (upperName == "0" || upperName == "GND") {
+        return 0;
+    }
+
+    auto it = nodeMap.find(upperName);
+    if (it != nodeMap.end()) {
+        return it->second;
+    }
+
+    nodeCounter++;
+    nodeMap[upperName] = nodeCounter;
+    
+    // ADD THIS LINE: Pass the clean string label to the netlist workspace
+    netlist.setNodeName(nodeCounter, upperName); 
+    
+    return nodeCounter;
+}
+
+
 double FileParser::parseValue(const std::string& valStr) {
     if (valStr.empty()) return 0.0;
     
@@ -86,6 +109,14 @@ std::vector<int> FileParser::parseNodes(const std::vector<std::string>& tokens, 
         mappedNodes.push_back(getOrAssignNode(tokens[i]));
     }
     return mappedNodes;
+}
+
+std::vector<int> FileParser::parseNodes(const std::vector<std::string>& tokens, size_t count, Netlist& netlist) {
+    std::vector<int> parsed;
+    for (size_t i = 1; i <= count && i < tokens.size(); ++i) {
+        parsed.push_back(getOrAssignNode(tokens[i], netlist));
+    }
+    return parsed;
 }
 
 GateType FileParser::parseGateType(const std::string& gateStr) {
@@ -208,6 +239,48 @@ void FileParser::parseNetlistFile(const std::string& filename, Netlist& netlist)
                 std::vector<int> nodes = parseNodes(tokens, 2);
                 netlist.addComponent(std::make_shared<Diode>(compName, nodes));
             }
+	    // =================================================================
+            // BEHAVIORAL LOGIC GATE PARSING (Dynamic Token Inspection Layer)
+            // Supports arbitrary input counts:
+            //   - Mgate InA Out NOT
+            //   - Mgate InA InB Out AND [vThresh vHigh vLow rOut]
+            //   - Mgate InA InB InC Out OR  [vThresh vHigh vLow rOut]
+            // =================================================================
+            else if (compTypeIndicator == 'm' && tokens.size() >= 3) {
+                // DYNAMICALLY DETECT POSITION OF THE LOGIC IDENTIFIER
+                size_t gateTokenIdx = 0;
+                for (size_t i = 2; i < tokens.size(); ++i) {
+                    std::string t = tokens[i];
+                    std::transform(t.begin(), t.end(), t.begin(), ::toupper);
+                    if (t == "NOT"  || t == "AND"  || t == "OR"  || 
+                        t == "NAND" || t == "NOR"  || t == "XOR" || t == "XNOR") {
+                        gateTokenIdx = i;
+                        break;
+                    }
+                }
+
+                if (gateTokenIdx > 0) {
+                    // Explicitly counts tokens representing connectivity nodes before the keyword
+                    size_t nodeCount = gateTokenIdx - 1; 
+                    std::vector<int> nodes = parseNodes(tokens, nodeCount);
+                    GateType gateType = parseGateType(tokens[gateTokenIdx]);
+                    
+                    // Parameters step forward seamlessly relative to the keyword index position
+                    double vThresh = (tokens.size() > gateTokenIdx + 1) ? parseValue(tokens[gateTokenIdx + 1]) : 2.5;
+                    double vHigh   = (tokens.size() > gateTokenIdx + 2) ? parseValue(tokens[gateTokenIdx + 2]) : 5.0;
+                    double vLow    = (tokens.size() > gateTokenIdx + 3) ? parseValue(tokens[gateTokenIdx + 3]) : 0.0;
+                    double rOut    = (tokens.size() > gateTokenIdx + 4) ? parseValue(tokens[gateTokenIdx + 4]) : 10.0;
+
+                    netlist.addComponent(std::make_shared<BehaviorLogicGateComponent>(
+                        compName, nodes, gateType, vThresh, vHigh, vLow, rOut
+                    ));
+                }
+                else {
+                    // Fallback block if you later want to implement actual analog standard MOSFETs (e.g. M1 D G S NMOS)
+                    // std::cerr << "Parser Alert: Non-gate 'M' identifier or model card encountered: " << compName << std::endl;
+                }
+            }
+
             // =================================================================
             // MOSFET or BEHAVIORAL LOGIC GATE PARSING (Shared 'M' Identifier)
             // Supports short form: Mgate InA InB Out AND
