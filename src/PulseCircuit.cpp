@@ -112,13 +112,13 @@ void PulseCircuit::autoGenerateMonitorPairs(std::vector<std::pair<int, int>>& mo
     std::cout << " [GENERATED CAUSE PAIRS]:\n";
     for (int node : causes) {
         monitorPairs.push_back(std::make_pair(node, 0));
-        std::cout << "   -> Paired: V(Node_" << node << ":" << netlist.getNodeName(node) << ", GND)\n";
+        std::cout << "   -> Paired: V(Node_" << node <<  ", GND)\n";
     }
 
     std::cout << "\n [GENERATED EFFECT PAIRS]:\n";
     for (int node : effects) {
         monitorPairs.push_back(std::make_pair(node, 0));
-        std::cout << "   -> Paired: V(Node_" << node << ":" << netlist.getNodeName(node) << ", GND)\n";
+        std::cout << "   -> Paired: V(Node_" << node << ", GND)\n";
     }
     std::cout << "========================================================================================\n\n";
 }
@@ -146,7 +146,7 @@ void PulseCircuit::runPulseTransientAnalysis(const PulseSimulationOptions& optio
               
     std::cout << std::left << std::setw(12) << "Time(us)";
     for (const auto& pair : monitorPairs) {
-        std::string label = "V(" + netlist.getNodeName(pair.first) + ")[V]";
+        std::string label = "V(" + std::to_string(pair.first) + ")[V]";
         std::cout << std::setw(28) << label;
     }
     std::cout << std::setw(16) << "I_Base(A)" 
@@ -162,7 +162,7 @@ void PulseCircuit::runPulseTransientAnalysis(const PulseSimulationOptions& optio
     
     pulseCsv << "Time(s)";
     for (const auto& pair : monitorPairs) {
-        pulseCsv << ",V_" << netlist.getNodeName(pair.first) << "(V)";
+        pulseCsv << ",V_" << std::to_string(pair.first) << "(V)";
     }
     pulseCsv << ",I_Base(A),I_Collector(A),I_Emitter(A),Fill_Velocity(V/us)\n";
 

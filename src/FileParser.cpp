@@ -134,6 +134,101 @@ GateType FileParser::parseGateType(const std::string& gateStr) {
     throw std::runtime_error("Unrecognized GateType token parameter: " + gateStr);
 }
 
+// ==========================================================================
+// PASS 2: RECURSIVE SUB-CIRCUIT BLOCKS FLATTENING LAYERS
+// ==========================================================================
+void FileParser::flattenSubcircuitInstance(
+    const std::string& instanceName,
+    const std::string& subcircuitTypeName,
+    const std::vector<std::string>& actualNodes,
+    const std::string& hierarchicalPrefix,
+    std::vector<std::vector<std::string>>& globalFlattenedTokens
+) {
+    std::string typeUpper = subcircuitTypeName;
+    std::transform(typeUpper.begin(), typeUpper.end(), typeUpper.begin(), ::toupper);
+
+    auto it = subcircuitRegistry.find(typeUpper);
+    if (it == subcircuitRegistry.end()) {
+        throw std::runtime_error("Hierarchical Error: Subcircuitblueprint macro not found: " + subcircuitTypeName);
+    }
+    
+    const auto& blueprint = it->second;
+    if (actualNodes.size() != blueprint.formalPorts.size()) {
+        throw std::runtime_error("Terminal mismatch on subcircuit instance '" + instanceName + 
+                                 "'. Expected " + std::to_string(blueprint.formalPorts.size()) + 
+                                 " ports, received " + std::to_string(actualNodes.size()));
+    }
+
+    std::map<std::string, std::string> portMapping;
+    for (size_t i = 0; i < blueprint.formalPorts.size(); ++i) {
+        portMapping[blueprint.formalPorts[i]] = actualNodes[i];
+    }
+
+    std::string newPrefix = hierarchicalPrefix.empty() ? instanceName : hierarchicalPrefix + "_" + instanceName;
+
+    for (const auto& lineTokens : blueprint.internalLines) {
+        if (lineTokens.empty()) continue;
+
+        std::vector<std::string> expandedLine = lineTokens;
+        
+        // Securely rewrite the localized instance label
+        expandedLine[0] = newPrefix + "_" + lineTokens[0];
+
+        char firstChar = std::tolower(static_cast<unsigned char>(lineTokens[0][0]));
+
+        if (firstChar == 'x') {
+            std::string nestedInstance = lineTokens[0];
+            std::string nestedType = lineTokens.back();
+            
+            std::vector<std::string> nestedActualNodes;
+            for (size_t i = 1; i < lineTokens.size() - 1; ++i) {
+                std::string targetNode = lineTokens[i];
+                if (portMapping.find(targetNode) != portMapping.end()) {
+                    nestedActualNodes.push_back(portMapping[targetNode]);
+                } else if (targetNode == "0" || targetNode == "GND" || targetNode == "gnd") {
+                    nestedActualNodes.push_back(targetNode);
+                } else {
+                    nestedActualNodes.push_back(newPrefix + "_" + targetNode);
+                }
+            }
+            
+            flattenSubcircuitInstance(nestedInstance, nestedType, nestedActualNodes, newPrefix, globalFlattenedTokens);
+        } 
+        else {
+            size_t nodeCount = 2; 
+            
+            if (firstChar == 'm') {
+                // Peek to determine node parameters boundary for Logic Gate vs physical FET
+                if (lineTokens.size() >= 5 && 
+                    (lineTokens[4] == "NOT"  || lineTokens[4] == "not"  || 
+                     lineTokens[4] == "AND"  || lineTokens[4] == "and"  || 
+                     lineTokens[4] == "OR"   || lineTokens[4] == "or"   || 
+                     lineTokens[4] == "NAND" || lineTokens[4] == "nand" || 
+                     lineTokens[4] == "NOR"  || lineTokens[4] == "nor"  || 
+                     lineTokens[4] == "XOR"  || lineTokens[4] == "xor"  || 
+                     lineTokens[4] == "XNOR" || lineTokens[4] == "xnor")) {
+                    nodeCount = 3; // InA InB Out
+                } else {
+                    nodeCount = 3; // Drain Gate Source
+                }
+            }
+            else if (firstChar == 'q') {
+                nodeCount = 3; // Collector Base Emitter
+            }
+
+            for (size_t i = 1; i <= nodeCount && i < expandedLine.size(); ++i) {
+                std::string targetNode = expandedLine[i];
+                if (portMapping.find(targetNode) != portMapping.end()) {
+                    expandedLine[i] = portMapping[targetNode];
+                } else if (targetNode != "0" && targetNode != "GND" && targetNode != "gnd") {
+                    expandedLine[i] = newPrefix + "_" + targetNode;
+                }
+            }
+            globalFlattenedTokens.push_back(expandedLine);
+        }
+    }
+}
+
 void FileParser::parseNetlistFile(const std::string& filename, Netlist& netlist) {
     std::ifstream file(filename);
     if (!file.is_open()) {
@@ -141,6 +236,12 @@ void FileParser::parseNetlistFile(const std::string& filename, Netlist& netlist)
     }
 
     std::string line;
+    std::vector<std::vector<std::string>> primaryTokens;
+    SubcircuitBlueprint* currentSubcircuitScope = nullptr;
+
+    // -----------------------------------------------------------------
+    // PASS 1: EXTRACT SUB-CIRCUIT BLUEPRINTS & REGISTERS
+    // -----------------------------------------------------------------
     while (std::getline(file, line)) {
         size_t commentIdx = line.find_first_of("*#;");
         if (commentIdx != std::string::npos) {
@@ -155,6 +256,67 @@ void FileParser::parseNetlistFile(const std::string& filename, Netlist& netlist)
         }
 
         if (tokens.empty()) continue; 
+
+        std::string cmdName = tokens[0];
+        std::transform(cmdName.begin(), cmdName.end(), cmdName.begin(), ::toupper);
+
+        if (cmdName == ".SUBCKT") {
+            if (tokens.size() < 3) throw std::runtime_error("Malformed .SUBCKT description format.");
+            std::string subName = tokens[1];
+            std::transform(subName.begin(), subName.end(), subName.begin(), ::toupper);
+            
+            SubcircuitBlueprint blueprint;
+            blueprint.name = subName;
+            for (size_t i = 2; i < tokens.size(); ++i) {
+                blueprint.formalPorts.push_back(tokens[i]);
+            }
+            
+            subcircuitRegistry[subName] = blueprint;
+            currentSubcircuitScope = &subcircuitRegistry[subName];
+        } 
+        else if (cmdName == ".ENDS") {
+            currentSubcircuitScope = nullptr;
+        } 
+        else {
+            if (currentSubcircuitScope != nullptr) {
+                currentSubcircuitScope->internalLines.push_back(tokens);
+            } else {
+                primaryTokens.push_back(tokens);
+            }
+        }
+    }
+    file.close();
+
+    // -----------------------------------------------------------------
+    // PASS 2: COMPUTE HIERARCHICAL FLATTENING
+    // -----------------------------------------------------------------
+    std::vector<std::vector<std::string>> fullyFlattenedTokens;
+
+    for (const auto& tokens : primaryTokens) {
+        if (tokens.empty()) continue;
+        char firstChar = std::tolower(static_cast<unsigned char>(tokens[0][0]));
+
+        if (firstChar == 'x') {
+            if (tokens.size() < 3) throw std::runtime_error("Malformed subcircuit call instance (X-card) configuration.");
+            std::string instanceName = tokens[0];
+            std::string subcircuitTypeName = tokens.back();
+
+            std::vector<std::string> actualNodes;
+            for (size_t i = 1; i < tokens.size() - 1; ++i) {
+                actualNodes.push_back(tokens[i]);
+            }
+
+            flattenSubcircuitInstance(instanceName, subcircuitTypeName, actualNodes, "", fullyFlattenedTokens);
+        } else {
+            fullyFlattenedTokens.push_back(tokens);
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // PASS 3: DUALLY MATCHED MOSFET/GATE AND BJT PRIMITIVE CONSTRUCTORS
+    // -----------------------------------------------------------------
+    for (const auto& tokens : fullyFlattenedTokens) {
+        if (tokens.empty()) continue;
 
         std::string compName = tokens[0];
         char compTypeIndicator = std::tolower(static_cast<unsigned char>(compName[0]));

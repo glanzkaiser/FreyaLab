@@ -1,0 +1,22 @@
+* Mixed-Signal Pulse Transient Test Circuit
+* Syntax: ComponentName Node1 Node2 [Node3...] Value/Type
+
+* 1. Power Supplies and Signal Sources
+VCC net_vcc GND 5.0
+VIN net_in  GND 5.0
+
+* 2. Digital Control Block (Pulse Switching Stimulus)
+* Syntax: U_Name Out In1 GATE_TYPE
+* Turns our static input into a logical high control signal
+U1 net_gate net_in NOT
+
+* 3. Transistor Base Drive Network
+R_Base net_gate net_b 1.0k
+
+* 4. Advanced VBIC BJT Common-Emitter Switch Stage
+* Syntax: Q_Name Collector Base Emitter ModelVariant
+Q1 net_out net_b GND NPN
+
+* 5. Pull-Up Network and Dynamic Output Load
+R_PullUp net_vcc net_out 470
+C_Load   net_out GND     10.0u

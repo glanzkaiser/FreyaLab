@@ -49,8 +49,11 @@ public:
         if (it != nodeNameMap.end()) {
             return it->second;
         }
-        return "UNKNOWN";
+        return "  ";
     }
+
+    void printComponentNodes() const;
+    void printComponentInputOutputNodes() const;
 
     void addComponent(std::shared_ptr<Component> component);
     void buildSparsityPattern();

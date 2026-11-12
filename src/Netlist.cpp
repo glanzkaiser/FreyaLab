@@ -3,8 +3,10 @@
 #include "freyalab/CircuitComponents.h"
 #include <algorithm>
 #include <iostream>
+#include <iomanip>
 #include <cmath>
 #include <stdexcept>
+
 // mathematically correct, good and robust and no structural bugs 
 void Netlist::addComponent(std::shared_ptr<Component> component) {
     // 1. Fail-fast safety validation on structural pointers
@@ -23,6 +25,132 @@ void Netlist::addComponent(std::shared_ptr<Component> component) {
     
     // 3. Ingest the pointer cleanly. Sizing calculations are deferred to topology analysis.
     components.push_back(std::move(component));
+}
+
+void Netlist::printComponentInputOutputNodes() const {
+    std::cout << "\n====================================================================================\n";
+    std::cout << "                     COMPONENTS NODE INPUT / OUTPUT TERMINAL MAP                    \n";
+    std::cout << "====================================================================================\n";
+    std::cout << std::left << std::setw(15) << "Device" 
+              << std::setw(18) << "Type" 
+              << std::setw(22) << "Input Terminal" 
+              << std::setw(22) << "Output Terminal" 
+              << "Extra Control Pins\n";
+    std::cout << "------------------------------------------------------------------------------------\n";
+
+    this->inspectComponents([this](const Component& comp, int extraIdx) {
+        (void)extraIdx;
+        const auto& nodes = comp.getNodes();
+        
+        std::cout << std::left << std::setw(15) << comp.getName();
+
+        std::string typeStr = "";
+        std::string inStr = "N/A";
+        std::string outStr = "N/A";
+        std::string extraStr = "";
+
+        // Standardized structural terminal decoding depending on active category types
+        switch (comp.getType()) {
+            case ComponentType::RESISTOR:
+            case ComponentType::CAPACITOR:
+            case ComponentType::INDUCTOR:
+            case ComponentType::DIODE:
+            case ComponentType::VOLTAGE_SOURCE:
+            case ComponentType::CURRENT_SOURCE: {
+                if (comp.getType() == ComponentType::RESISTOR)       typeStr = "Resistor";
+                else if (comp.getType() == ComponentType::CAPACITOR) typeStr = "Capacitor";
+                else if (comp.getType() == ComponentType::INDUCTOR)  typeStr = "Inductor";
+                else if (comp.getType() == ComponentType::DIODE)     typeStr = "Diode (A->K)";
+                else                                                 typeStr = "Source";
+
+                if (nodes.size() >= 2) {
+                    inStr  = std::to_string(nodes[0]) + " [Positive/Anode]";
+                    outStr = std::to_string(nodes[1]) + " [Negative/Cathode]";
+                }
+                break;
+            }
+            case ComponentType::MOSFET: {
+                typeStr = "MOSFET (D-G-S)";
+                if (nodes.size() >= 3) {
+                    inStr  = std::to_string(nodes[1]) + " [Gate]";
+                    outStr = std::to_string(nodes[0]) + " [Drain]";
+                    extraStr = "Source: " + std::to_string(nodes[2]) ;
+                }
+                break;
+            }
+            case ComponentType::BJT: {
+                typeStr = "BJT (C-B-E)";
+                if (nodes.size() >= 3) {
+                    inStr  = std::to_string(nodes[1]) + " [Base]";
+                    outStr = std::to_string(nodes[0]) + " [Collector]";
+                    extraStr = "Emitter: " + std::to_string(nodes[2]) ;
+                }
+                break;
+            }
+            case ComponentType::DIGITAL_IC: {
+                typeStr = "Logic Gate";
+                if (!nodes.empty()) {
+                    // Per FileParser.cpp line 150 layout convention: Uname Nout Nin1 [Nin2]
+                    outStr = std::to_string(nodes[0]) + " [Out Pin]";
+                    
+                    std::string inputs = "";
+                    for (size_t i = 1; i < nodes.size(); ++i) {
+                        inputs += std::to_string(nodes[i]) ;
+                        if (i < nodes.size() - 1) inputs += ", ";
+                    }
+                    inStr = inputs.empty() ? "None" : inputs + " [In Pin(s)]";
+                }
+                break;
+            }
+            default: {
+                typeStr = "Primitive Component";
+                if (!nodes.empty()) inStr = std::to_string(nodes[0]) ;
+                if (nodes.size() >= 2) outStr = std::to_string(nodes[1]) ;
+                break;
+            }
+        }
+
+        std::cout << std::left << std::setw(18) << typeStr 
+                  << std::setw(22) << inStr 
+                  << std::setw(22) << outStr 
+                  << extraStr << "\n";
+    });
+
+    std::cout << "====================================================================================\n\n";
+}
+
+
+void Netlist::printComponentNodes() const {
+    std::cout << "\n==================================================\n";
+    std::cout << "          NETLIST COMPONENT NODE MAPPING          \n";
+    std::cout << "==================================================\n";
+    std::cout << std::left << std::setw(20) << "Component Name" << "Connected Nodes (ID: Label)\n";
+    std::cout << "--------------------------------------------------\n";
+
+    // Use the native inspection hook to traverse all instantiated primitives safely
+    this->inspectComponents([this](const Component& comp, int extraIdx) {
+        (void)extraIdx; // Extra MNA rows are ignored for basic physical net tracking
+        
+        std::cout << std::left << std::setw(20) << comp.getName();
+        
+        const auto& associatedNodes = comp.getNodes();
+        if (associatedNodes.empty()) {
+            std::cout << "[No nodes connected]";
+        } else {
+            for (size_t i = 0; i < associatedNodes.size(); ++i) {
+                int nodeNum = associatedNodes[i];
+                std::cout << nodeNum ;
+                //std::string nodeLabel = this->getNodeName(nodeNum);
+                //std::cout << nodeNum << ":" << nodeLabel;
+                if (i < associatedNodes.size() - 1) {
+                    std::cout << ", ";
+                }
+            }
+        }
+        std::cout << "\n";
+    });
+    
+    std::cout << "==================================================\n\n";
 }
 
 // mathematically correct, good and robust and no structural bugs 
@@ -61,7 +189,7 @@ void Netlist::analyzeTopology() {
     
     // 3. Perfect mathematical sizing cohesion: totalSize matches the end state of the counter
     totalSize = globalExtraRowCounter;
-}
+} 
 
 void Netlist::buildSparsityPattern() {
     // 1. Establish precise topological dimensions and allocate internal component indices

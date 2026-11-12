@@ -46,16 +46,17 @@ int main() {
 		uint8_t a = step.inputA;
 		uint8_t b = step.inputB;
 
+		// FIXED: Mengubah evaluateGate menjadi evaluateBusGate untuk pemrosesan paralel 4-bit
 		std::cout << std::left << std::setw(9) << step.timeScale
 			<< std::setw(4) << LogicGates::toBinary4Bit(a) << " "
 			<< std::setw(6) << LogicGates::toBinary4Bit(b) << "| "
-			<< std::setw(5) << LogicGates::toBinary4Bit(LogicGates::evaluateGate(GateType::NOT, a))
-			<< std::setw(5) << LogicGates::toBinary4Bit(LogicGates::evaluateGate(GateType::AND, a, b))
-			<< std::setw(5) << LogicGates::toBinary4Bit(LogicGates::evaluateGate(GateType::OR, a, b))
-			<< std::setw(5) << LogicGates::toBinary4Bit(LogicGates::evaluateGate(GateType::XOR, a, b))
-			<< std::setw(5) << LogicGates::toBinary4Bit(LogicGates::evaluateGate(GateType::NAND, a, b))
-			<< std::setw(5) << LogicGates::toBinary4Bit(LogicGates::evaluateGate(GateType::NOR, a, b))
-			<< LogicGates::toBinary4Bit(LogicGates::evaluateGate(GateType::XNOR, a, b)) << "\n";
+			<< std::setw(5) << LogicGates::toBinary4Bit(LogicGates::evaluateBusGate(GateType::NOT, a))
+			<< std::setw(5) << LogicGates::toBinary4Bit(LogicGates::evaluateBusGate(GateType::AND, a, b))
+			<< std::setw(5) << LogicGates::toBinary4Bit(LogicGates::evaluateBusGate(GateType::OR, a, b))
+			<< std::setw(5) << LogicGates::toBinary4Bit(LogicGates::evaluateBusGate(GateType::XOR, a, b))
+			<< std::setw(5) << LogicGates::toBinary4Bit(LogicGates::evaluateBusGate(GateType::NAND, a, b))
+			<< std::setw(5) << LogicGates::toBinary4Bit(LogicGates::evaluateBusGate(GateType::NOR, a, b))
+			<< LogicGates::toBinary4Bit(LogicGates::evaluateBusGate(GateType::XNOR, a, b)) << "\n";
 	}
 	// Get ending timepoint
 	auto stop = high_resolution_clock::now();
