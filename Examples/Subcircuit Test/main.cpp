@@ -3,27 +3,28 @@
 #include "freyalab/DCCircuit.h"
 #include "freyalab/ACCircuit.h"
 #include "freyalab/PulseCircuit.h"
+#include "freyalab/CircuitComponents.h"
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 int main() {
     std::cout << "====================================================================\n";
     std::cout << "             FREYALAB HIERARCHICAL EXTENSION BOOT ENGINE            \n";
     std::cout << "====================================================================\n\n";
 
-    // Target the external independent structural netlist file
     const std::string netlistFilename = "circuit.txt";
-    
-    // Initialize clean solver containers and engine parser instances
+
     Netlist circuitWorkspace;
     FileParser circuitParser;
 
-    std::cout << "[Parser] Opening external target vector: " << netlistFilename << "\n";
-    std::cout << "[Parser] Ingesting line data streams and processing macro matrices...\n";
-    
+    std::cout << "[Parser] Opening external target file: " << netlistFilename << "\n";
+    std::cout << "[Parser] Ingesting line data streams and flattening hierarchical subcircuits...\n";
+
     try {
-        // Run the multi-pass hierarchical macro compilation pipeline directly on the file
         circuitParser.parseNetlistFile(netlistFilename, circuitWorkspace);
         std::cout << "[Parser] Successfully flattened macro layers into core primitive objects.\n";
     } catch (const std::exception& e) {
@@ -32,39 +33,44 @@ int main() {
         return -1;
     }
 
-    // Dynamically construct sparse patterns to sync unshifted 0-based layout offsets
+    // Build sparse matrix topology and assign type-safe MnaIndex rows
     std::cout << "[Solver] Executing structural topology layout diagnostics...\n";
     circuitWorkspace.buildSparsityPattern();
 
-    // Execute the input-output terminal printing tracking metrics 
     std::cout << "\nChecking structural component parameters allocation rules below:";
     circuitWorkspace.printComponentInputOutputNodes();
 
     std::cout << "--------------------------------------------------------------------\n";
     std::cout << "Total Active Solution Matrix Size: " << circuitWorkspace.getTotalSystemSize() << "\n";
     std::cout << "Total Resolved Isolated Nodes Count: " << circuitWorkspace.getNumNodes() << "\n";
-    std::cout << "====================================================================\n";
-
-    std::cout << "[Parser] Loading and flattening hierarchical subcircuits...\n";
-    try {
-        circuitParser.parseNetlistFile(netlistFilename, circuitWorkspace);
-        std::cout << "[Parser] Hierarchy successfully flattened into base primitives.\n\n";
-    } catch (const std::exception& e) {
-        std::cerr << "[Fatal Error] Subcircuit expansion failure: " << e.what() << "\n";
-        return -1;
-    }
+    std::cout << "====================================================================\n\n";
 
     // =================================================================
     // 1. RUN DC OPERATING POINT & SWEEP ANALYSIS
     // =================================================================
     std::cout << "[DC ANALYSIS] Initializing steady-state operating point engine...\n";
     DCCircuit dcEngine(circuitWorkspace);
-    
-    // Solves the background Newton-Raphson system and outputs a formatted terminal matrix table
+
     dcEngine.runOperatingPointAnalysis();
 
-    // Executes a parametric source sweep on V_SOURCE from 0V to 10V in 0.5V steps
-    // Automatically writes data to: dc_sweep_nodes.csv, dc_sweep_branches.csv, dc_sweep_power.csv
+    // Print bounds-checked NetNode potentials and MnaIndex extra branch values
+    const std::vector<double>& dcState = circuitWorkspace.getCurrentState();
+    std::cout << "[DC TELEMETRY] Resolved NetNode Voltages:\n";
+    for (int n = 1; n <= circuitWorkspace.getNumNodes(); ++n) {
+        NetNode node{n};
+        std::cout << "  V(" << circuitWorkspace.getNodeName(node) << " / Node_" << node.id << ") = "
+                  << std::fixed << std::setprecision(6)
+                  << getSafeVoltage(dcState, node) << " V\n";
+    }
+
+    circuitWorkspace.inspectComponents([&dcState](const Component& comp, MnaIndex extraIdx) {
+        if (extraIdx.isValid()) {
+            std::cout << "  Extra MNA Row [" << extraIdx.idx << "] (" << comp.getName() << ") = "
+                      << std::scientific << std::setprecision(4)
+                      << getSafeExtraValue(dcState, extraIdx) << "\n";
+        }
+    });
+
     try {
         dcEngine.runDcSweepAnalysis("V_SOURCE", 0.0, 10.0, 0.5);
     } catch (const std::exception& e) {
@@ -79,8 +85,6 @@ int main() {
 
     if (acEngine.isAcCircuit()) {
         std::cout << "[AC Engine] AC source detected. Initiating logarithmic frequency sweep...\n";
-        // Sweeps frequencies from 10 Hz to 10 MHz across 100 points
-        // Automatically captures linearized reactive parameters and outputs 'ac_frequency_sweep.csv'
         acEngine.runFrequencySweepAnalysis(10.0, 10.0e6, 100);
     } else {
         std::cout << "[AC Engine] Skip: No dynamic AC magnitude flags found on circuit sources.\n";
@@ -95,17 +99,15 @@ int main() {
     if (pulseEngine.isPulseCircuit()) {
         PulseSimulationOptions pulseOptions;
         pulseOptions.startTime = 0.0;
-        pulseOptions.stopTime = 100e-6;    // 100 microseconds total simulation horizon
-        pulseOptions.initialDt = 10e-9;   // 10 nanoseconds starting step size
-        pulseOptions.minDt = 1e-12;       // 1 picosecond adaptive timestep floor boundary
-        pulseOptions.maxDt = 1e-6;        // 1 microsecond timestep ceiling capping
+        pulseOptions.stopTime  = 100e-6;   // 100 microseconds total simulation horizon
+        pulseOptions.initialDt = 10e-9;    // 10 nanoseconds starting step size
+        pulseOptions.minDt     = 1e-12;    // 1 picosecond adaptive timestep floor boundary
+        pulseOptions.maxDt     = 1e-6;     // 1 microsecond timestep ceiling capping
 
-        std::vector<std::pair<int, int>> monitorPairs;
-        // Automated scanning gathers Cause/Effect branches and binds measurements relative to Ground (0)
+        // Automated scanning gathers Cause/Effect NetNodes and binds measurements relative to Ground (NetNode{0})
+        std::vector<std::pair<NetNode, NetNode>> monitorPairs;
         pulseEngine.autoGenerateMonitorPairs(monitorPairs);
 
-        // Runs the non-dissipative TR-BDF2 time integration sequence
-        // Automatically manages local truncation error steps and outputs 'pulse_transient.csv'
         pulseEngine.runPulseTransientAnalysis(pulseOptions, monitorPairs);
     } else {
         std::cout << "[Pulse Engine] Skip: No active non-linear switching devices discovered.\n";

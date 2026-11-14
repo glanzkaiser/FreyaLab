@@ -1,0 +1,3 @@
+./openvaf bsimcmg.va -o bsimcmg.osdi
+
+*you will obtain bsimcmg.osdi that can be loaded via osdi.h

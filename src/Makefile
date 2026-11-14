@@ -2,9 +2,9 @@ CXX = g++
 
 FREYALAB_DIR = ../src
 LIB = libfreyalab.so 
-SOURCES = CircuitComponents.cpp
+SOURCES = CircuitComponents.cpp BSIM.cpp
 SOURCES +=ACCircuit.cpp DCCircuit.cpp FileParser.cpp math.cpp PulseCircuit.cpp 
-SOURCES += LogicGates.cpp Netlist.cpp 
+SOURCES +=  LogicGates.cpp Netlist.cpp 
 
 
 OBJS = $(addsuffix .o, $(basename $(notdir $(SOURCES))))

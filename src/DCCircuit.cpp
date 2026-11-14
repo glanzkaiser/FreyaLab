@@ -1,9 +1,9 @@
 #include "freyalab/DCCircuit.h"
 #include "freyalab/CircuitComponents.h"
-#include <iostream>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
-#include <cmath>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
 
@@ -15,56 +15,48 @@ bool DCCircuit::solveMna() {
         netlist.buildSparsityPattern();
         systemSize = netlist.getTotalSystemSize();
     }
-    
-    // Explicit 1-based mapping topology separation
-    int nodeCount = netlist.getNumNodes(); 
-    int currentExtraCount = systemSize - nodeCount; 
-    
-    MnaMatrixContext ctx{ 
-        netlist.getGMatrix(), 
-        netlist.getBVector(), 
-        &netlist.getStateV(), 
-        &netlist.getHistoricV(), 
-        &netlist.getMidpointV(), 
-        0.0,    // Time
-        0.0,   // dt
-        0,      // orderStep: 0 = DC Operating Point
-        -1      // assignedExtraIdx: Managed dynamically during Component iteration loop
+
+    MnaMatrixContext ctx{
+        netlist.getGMatrix(),
+        netlist.getBVector(),
+        &netlist.getStateV(),
+        &netlist.getHistoricV(),
+        &netlist.getMidpointV(),
+        0.0,         // Time
+        0.0,         // dt
+        0,           // orderStep: 0 = DC Operating Point
+        MnaIndex{}   // assignedExtraIdx: Managed dynamically during Component iteration loop
     };
-    
+
     return netlist.runNewtonRaphson(ctx, 150, 1e-3, 1e-6);
 }
 
 void DCCircuit::printOperatingPointTable(const std::vector<double>& state) {
-    std::cout << "\n========================================================================\n"
-              << "                      DC OPERATING POINT TABLE                          \n"
-              << "========================================================================\n"
-              << std::left << std::setw(12) << "Name" 
-              << std::setw(15) << "Nodes" 
-              << std::setw(15) << "V-Drop(V)" 
-              << std::setw(15) << "Current(A)" 
+    std::cout << "\n=======================================================================================\n"
+              << "                                DC OPERATING POINT TABLE                               \n"
+              << "=======================================================================================\n"
+              << std::left << std::setw(12) << "Name"
+              << std::setw(15) << "Nodes"
+              << std::setw(15) << "V-Drop(V)"
+              << std::setw(15) << "Current(A)"
               << std::setw(15) << "Power(W)"
-	          << std::setw(15) << "Type" << "\n"
-              << "------------------------------------------------------------------------\n";
+              << std::setw(15) << "Type" << "\n"
+              << "---------------------------------------------------------------------------------------\n";
 
     SimulationContext simCtx{ state, 0.0, 0 };
 
-    netlist.inspectComponents([&state, &simCtx](const Component& comp, int extraIdx) {
+    netlist.inspectComponents([&state, &simCtx](const Component& comp, MnaIndex extraIdx) {
         double vDrop = comp.calculateVoltageDrop(state);
-        
-        // PERBAIKAN SELESTIAL: Konversikan extraIdx global ke 1-based index 
-        // agar selaras dengan fungsi calculateCurrent internal komponen
-        //int mappedExtraIdx = (extraIdx != -1) ? (extraIdx + 1) : -1;
         double current = comp.calculateCurrent(simCtx, extraIdx);
-        
-        // Koreksi arah tanda baca konvensi generator arus khusus Voltage Source
+
+        // Generator convention sign correction for independent Voltage Sources
         if (comp.getType() == ComponentType::VOLTAGE_SOURCE) {
             current = -current;
         }
-        
+
         double power = std::abs(vDrop * current);
 
-  	    std::string typeStr;
+        std::string typeStr;
         switch (comp.getType()) {
             case ComponentType::RESISTOR:       typeStr = "Resistor"; break;
             case ComponentType::VOLTAGE_SOURCE: typeStr = "V-Source"; break;
@@ -72,6 +64,9 @@ void DCCircuit::printOperatingPointTable(const std::vector<double>& state) {
             case ComponentType::INDUCTOR:       typeStr = "Inductor"; break;
             case ComponentType::DIODE:          typeStr = "Diode"; break;
             case ComponentType::MOSFET:         typeStr = "MOSFET"; break;
+            case ComponentType::FINFET:         typeStr = "FinFET"; break;
+            case ComponentType::RIBBONFET:      typeStr = "RibbonFET"; break;
+            case ComponentType::GAA_FET:        typeStr = "GAA-FET"; break;
             case ComponentType::BJT:            typeStr = "BJT"; break;
             case ComponentType::DIGITAL_IC:     typeStr = "Logic Gate"; break;
             default:                            typeStr = "Behavioral"; break;
@@ -80,79 +75,78 @@ void DCCircuit::printOperatingPointTable(const std::vector<double>& state) {
         std::stringstream ss;
         const auto& nodes = comp.getNodes();
         for (size_t i = 0; i < nodes.size(); ++i) {
-            ss << nodes[i];
-            if (i < nodes.size() - 1) ss << ",";
+            ss << nodes[i].id;
+            if (i + 1 < nodes.size()) ss << ",";
         }
 
         std::cout << std::left << std::setw(12) << comp.getName()
                   << std::setw(15) << ss.str()
                   << std::setw(15) << std::fixed << std::setprecision(5) << vDrop
                   << std::setw(15) << current
-                  << std::setw(15) << power 
+                  << std::setw(15) << power
                   << std::setw(15) << typeStr << "\n";
     });
-    
-    std::cout << "======================================================================\n";
-    std::cout << "             DETAILED MULTI-TERMINAL ACTIVE DEVICE TELEMETRY          \n";
-    std::cout << "======================================================================\n";
-    std::cout << std::left << std::setw(12) << "Device" 
-              << std::setw(18) << "Term 1 (C/D)" 
-              << std::setw(18) << "Term 2 (B/G)" 
-              << std::setw(18) << "Term 3 (E/S)" << "\n";
-    std::cout << "----------------------------------------------------------------------\n";
 
-    netlist.inspectComponents([&state](const Component& comp, int extraIdx) {
-        (void)extraIdx;
+    std::cout << "=======================================================================================\n";
+    std::cout << "                       DETAILED MULTI-TERMINAL ACTIVE DEVICE TELEMETRY                 \n";
+    std::cout << "=======================================================================================\n";
+    std::cout << std::left << std::setw(12) << "Device"
+              << std::setw(14) << "Model"
+              << std::setw(20) << "Term 1 (C/D)"
+              << std::setw(20) << "Term 2 (B/G)"
+              << std::setw(20) << "Term 3 (E/S)" << "\n";
+    std::cout << "---------------------------------------------------------------------------------------\n";
+
+    netlist.inspectComponents([&state, &simCtx](const Component& comp, MnaIndex extraIdx) {
         const auto& nodes = comp.getNodes();
-        int stateSize = static_cast<int>(state.size());
-        
-        auto getSafeNodeVoltage = [&](int nodeNum) -> double {
-            if (nodeNum <= 0) return 0.0;
-            int matrixIdx = nodeNum - 1;
-            if (matrixIdx < stateSize) return state[matrixIdx];
-            return 0.0;
-        };
+        if (nodes.size() < 3) return;
 
-        if (comp.getType() == ComponentType::BJT && nodes.size() >= 3) {
-            double vC = getSafeNodeVoltage(nodes[0]);
-            double vB = getSafeNodeVoltage(nodes[1]);
-            double vE = getSafeNodeVoltage(nodes[2]);
-            
-            double Vt = 0.02585;
-            double If = 1e-16 * (std::exp((vB - vE) / Vt) - 1.0); 
-            double Ir = 1e-16 * (std::exp((vB - vC) / Vt) - 1.0);
-            double Ice = (If - Ir) / (1.0 + (If / 0.01)); 
-            
-            double I_c = Ice - Ir; 
-            double I_b = If + Ir; 
-            double I_e = -(I_c + I_b); 
+        ComponentType cType = comp.getType();
+
+        if (cType == ComponentType::BJT) {
+            double vC = getSafeVoltage(state, nodes[0]);
+            double vB = getSafeVoltage(state, nodes[1]);
+            double vE = getSafeVoltage(state, nodes[2]);
+
+            // Use the device's own polarized VBIC current model + base current approximation
+            double I_c = comp.calculateCurrent(simCtx, extraIdx);
+            double Vt = 0.025851991;
+            double vbe_abs = std::abs(vB - vE);
+            double vbc_abs = std::abs(vB - vC);
+            double If = 1e-16 * (std::exp(std::min(vbe_abs / Vt, 40.0)) - 1.0);
+            double Ir = 1e-16 * (std::exp(std::min(vbc_abs / Vt, 40.0)) - 1.0);
+            double sign = (I_c >= 0.0) ? 1.0 : -1.0;
+            double I_b = sign * ((If / 100.0) + (Ir / 50.0));
+            double I_e = -(I_c + I_b);
 
             std::cout << std::left << std::setw(12) << comp.getName()
-                      << "Ic: " << std::setw(14) << std::scientific << std::setprecision(4) << I_c
-                      << "Ib: " << std::setw(14) << I_b
-                      << "Ie: " << std::setw(14) << I_e << "\n";
+                      << std::setw(14) << "VBIC-BJT"
+                      << "Ic: " << std::setw(16) << std::scientific << std::setprecision(4) << I_c
+                      << "Ib: " << std::setw(16) << I_b
+                      << "Ie: " << std::setw(16) << I_e << "\n";
         }
-        else if (comp.getType() == ComponentType::MOSFET && nodes.size() >= 3) {
-            double vD = getSafeNodeVoltage(nodes[0]);
-            double vG = getSafeNodeVoltage(nodes[1]);
-            double vS = getSafeNodeVoltage(nodes[2]);
+        else if (cType == ComponentType::MOSFET ||
+                 cType == ComponentType::FINFET ||
+                 cType == ComponentType::RIBBONFET ||
+                 cType == ComponentType::GAA_FET) {
+            std::string modelLabel = "MOSFET";
+            if (cType == ComponentType::FINFET)         modelLabel = "FinFET";
+            else if (cType == ComponentType::RIBBONFET) modelLabel = "RibbonFET";
+            else if (cType == ComponentType::GAA_FET)   modelLabel = "GAA-FET";
 
-            double vgs = vG - vS; double vds = vD - vS;
-            double I_d = 0.0;
-            if (vgs > 0.7) {
-                if (vds < (vgs - 0.7)) I_d = 1e-3 * ((vgs - 0.7) * vds - 0.5 * vds * vds);
-                else I_d = 0.5 * 1e-3 * (vgs - 0.7) * (vgs - 0.7);
-            }
-            double I_g = 0.0;        
+            // Delegates directly to Mosfet::calculateCurrent or BsimCmgFet::calculateCurrent
+            double I_d = comp.calculateCurrent(simCtx, extraIdx);
+            double I_g = 0.0;
             double I_s = -I_d;
 
             std::cout << std::left << std::setw(12) << comp.getName()
-                      << "Id: " << std::setw(14) << std::scientific << std::setprecision(4) << I_d
-                      << "Ig: " << std::setw(14) << I_g
-                      << "Is: " << std::setw(14) << I_s << "\n";
+                      << std::setw(14) << modelLabel
+                      << "Id: " << std::setw(16) << std::scientific << std::setprecision(4) << I_d
+                      << "Ig: " << std::setw(16) << I_g
+                      << "Is: " << std::setw(16) << I_s << "\n";
         }
     });
-    std::cout << "======================================================================\n\n";
+    std::cout << "=======================================================================================\n\n";
 }
 
 void DCCircuit::runOperatingPointAnalysis() {
@@ -176,8 +170,9 @@ void DCCircuit::runDcSweepAnalysis(const std::string& sourceName, double startVa
         throw std::runtime_error("Fatal Error: Could not generate DC Sweep CSV file handles.");
     }
 
-    // Tulis kolom penanda pertama untuk nilai sapuan parameter
-    csvV << "SweepValue"; csvI << "SweepValue"; csvP << "SweepValue";
+    csvV << "SweepValue";
+    csvI << "SweepValue";
+    csvP << "SweepValue";
 
     int systemSize = netlist.getTotalSystemSize();
     if (systemSize == 0) {
@@ -185,46 +180,44 @@ void DCCircuit::runDcSweepAnalysis(const std::string& sourceName, double startVa
         systemSize = netlist.getTotalSystemSize();
     }
 
-    // Tulis Header kolom CSV secara horizontal
-    netlist.inspectComponents([&csvV, &csvI, &csvP](const Component& comp, int extraIdx) {
+    netlist.inspectComponents([&csvV, &csvI, &csvP](const Component& comp, MnaIndex extraIdx) {
         (void)extraIdx;
         csvV << "," << comp.getName() << "_VDrop";
         csvI << "," << comp.getName() << "_Current";
         csvP << "," << comp.getName() << "_Power";
     });
-    csvV << "\n"; csvI << "\n"; csvP << "\n";
+    csvV << "\n";
+    csvI << "\n";
+    csvP << "\n";
 
     if (stepVal <= 0.0) stepVal = 0.1;
     double currentSweepVal = startVal;
 
     std::vector<double> lastValidState = netlist.getCurrentState();
 
-    // Toleransi komparasi floating point aman mencegah infinite loop
     while (currentSweepVal <= stopVal + (stepVal * 0.01)) {
-        
-        // Mutasi nilai sumber tegangan/arus DC target sweep menggunakan pemanggilan non-const
-        netlist.inspectComponents([&sourceName, currentSweepVal](Component& comp, int extraIdx) {
+        // Mutate target DC source (or BSIM-CMG VTH0) sweep value
+        netlist.inspectComponents([&sourceName, currentSweepVal](Component& comp, MnaIndex extraIdx) {
             (void)extraIdx;
             if (comp.getName() == sourceName) {
                 comp.setValue(currentSweepVal);
             }
         });
 
-        // PERBAIKAN: Dapatkan jumlah node murni yang tepat untuk isolasi topologi ekstra
-        int nodeCount = netlist.getNumNodes();
-        int currentExtraCount = systemSize - nodeCount;
-        
-        // PERBAIKAN: Hapus operator '&' dan gunakan netlist.getBVector() untuk parameter ke-2!
-        MnaMatrixContext ctx{ 
-            const_cast<CsrMatrix&>(netlist.getGMatrix()), 
-            const_cast<std::vector<double>&>(netlist.getHistoricV()), 
-            &netlist.getStateV(), 
-            &netlist.getHistoricV(), 
-            &netlist.getMidpointV(), 
-            0.0, 1e-12, 0, currentExtraCount 
+        MnaMatrixContext ctx{
+            netlist.getGMatrix(),
+            netlist.getBVector(),
+            &netlist.getStateV(),
+            &netlist.getHistoricV(),
+            &netlist.getMidpointV(),
+            0.0,         // time
+            0.0,         // dt (0.0 for static DC)
+            0,           // orderStep: 0 = DC Operating Point
+            MnaIndex{}   // assignedExtraIdx: managed per-component inside Netlist
         };
+
         try {
-            // Kontinuitas Solver: Gunakan kondisi konvergen terakhir sebagai tebakan awal langkah baru
+            // Solver continuity: use the last converged solution as initial guess
             if (!lastValidState.empty() && lastValidState.size() == netlist.getStateV().size()) {
                 netlist.getStateV() = lastValidState;
             }
@@ -232,32 +225,38 @@ void DCCircuit::runDcSweepAnalysis(const std::string& sourceName, double startVa
             if (!netlist.runNewtonRaphson(ctx, 100, 1e-3, 1e-6)) {
                 throw std::runtime_error("Newton-Raphson divergence on sweep element step.");
             }
-            
+
             const auto& state = netlist.getCurrentState();
-            lastValidState = state; // Perbarui kondisi valid untuk iterasi selanjutnya
+            lastValidState = state;
 
             csvV << currentSweepVal;
             csvI << currentSweepVal;
             csvP << currentSweepVal;
 
-            // PERBAIKAN: Gunakan inisialisasi agregat standar guna mencegah C++20 standard mismatch error
             SimulationContext sweepSimCtx{ state, 0.0, 0 };
 
-            // Kumpulkan hasil kalkulasi final titik penyapuan ke masing-masing file CSV
-            netlist.inspectComponents([&state, &sweepSimCtx, &csvV, &csvI, &csvP](const Component& comp, int extraIdx) {
+            // Collect telemetry across all components (MOSFET, BJT, FinFET, RibbonFET, GAA-FET)
+            netlist.inspectComponents([&state, &sweepSimCtx, &csvV, &csvI, &csvP](const Component& comp, MnaIndex extraIdx) {
                 double vDrop = comp.calculateVoltageDrop(state);
                 double current = comp.calculateCurrent(sweepSimCtx, extraIdx);
+
+                if (comp.getType() == ComponentType::VOLTAGE_SOURCE) {
+                    current = -current;
+                }
+
                 double power = std::abs(vDrop * current);
 
                 csvV << "," << vDrop;
                 csvI << "," << current;
                 csvP << "," << power;
             });
-            
-            csvV << "\n"; csvI << "\n"; csvP << "\n";
+
+            csvV << "\n";
+            csvI << "\n";
+            csvP << "\n";
 
         } catch (const std::exception& e) {
-            std::cerr << "Warning: Sweep step failure at value " << currentSweepVal 
+            std::cerr << "Warning: Sweep step failure at value " << currentSweepVal
                       << " due to convergence breakdown: " << e.what() << std::endl;
         }
 

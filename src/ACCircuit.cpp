@@ -1,12 +1,12 @@
 #include "freyalab/ACCircuit.h"
 #include "freyalab/math.h"
 #include "freyalab/CircuitComponents.h"
-#include <iostream>
-#include <fstream>
-#include <iomanip>
+#include <algorithm>
 #include <cmath>
 #include <complex>
-#include <algorithm>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <stdexcept>
 
 ACCircuit::ACCircuit(Netlist& netlistInstance) : netlist(netlistInstance) {}
@@ -22,7 +22,9 @@ bool ACCircuit::solveTransientStep(MnaMatrixContext& ctx, double targetTime, dou
     return netlist.runNewtonRaphson(ctx, 50, 1e-3, 1e-6);
 }
 
-void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options, int inputNode, int outputNode) {
+void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
+                                             NetNode inputNode,
+                                             NetNode outputNode) {
     std::cout << "\n====================================================================================\n"
               << "                        AC TRANSIENT WAVEFORM TABLE (2ND-ORDER TR-BDF2)            \n"
               << "====================================================================================\n"
@@ -36,17 +38,16 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
     double t = options.startTime;
     double dt = options.initialDt;
     double stopT = options.stopTime;
-    
+
     double gamma = 2.0 - std::sqrt(2.0); // Optimal L-stable TR-BDF2 configuration parameter
-    int currentExtraCount = netlist.getTotalSystemSize() - netlist.getNumNodes();
-    
-    MnaMatrixContext ctx{ 
-        netlist.getGMatrix(), 
+
+    MnaMatrixContext ctx{
+        netlist.getGMatrix(),
         netlist.getBVector(),
-        &netlist.getStateV(), 
-        &netlist.getHistoricV(), 
-        &netlist.getMidpointV(), 
-        t, dt, 0, currentExtraCount 
+        &netlist.getStateV(),
+        &netlist.getHistoricV(),
+        &netlist.getMidpointV(),
+        t, dt, 0, MnaIndex{}
     };
 
     try {
@@ -63,37 +64,36 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
         if (!netlist.runNewtonRaphson(ctx, 100, options.relTol, options.absTol)) {
             throw std::runtime_error("AC Transient baseline Operating Point diverged.");
         }
-        
+
         netlist.getHistoricV() = netlist.getStateV();
-        
-        netlist.inspectComponents([&ctx](const Component& comp, int extraIdx) {
+
+        netlist.inspectComponents([&ctx](Component& comp, MnaIndex extraIdx) {
             (void)extraIdx;
-            const_cast<Component&>(comp).updateHistory(ctx);
+            comp.updateHistory(ctx);
         });
 
         const auto& initialState = netlist.getCurrentState();
-        double vIn = (inputNode > 0 && static_cast<size_t>(inputNode - 1) < initialState.size()) ? initialState[inputNode - 1] : 0.0;
-        double vOut = (outputNode > 0 && static_cast<size_t>(outputNode - 1) < initialState.size()) ? initialState[outputNode - 1] : 0.0;
+        double vIn  = getSafeVoltage(initialState, inputNode);
+        double vOut = getSafeVoltage(initialState, outputNode);
         std::cout << std::left << std::setw(12) << t << std::setw(15) << vIn << std::setw(15) << vOut << "\n";
 
         // ====================================================================
         // STEP 2: TIME STEPPING SIMULATION LOOP
         // ====================================================================
-        while (t < stopT) {
+        while (t + options.minDt * 0.5 < stopT) {
             if (t + dt > stopT) {
                 dt = stopT - t;
             }
 
-            // Hard safety ceiling check to protect against infinite scaling collapse
             if (dt < options.minDt) {
                 throw std::runtime_error("Timestep crashed below minimum safety limit (stagnant matrix grid configuration).");
             }
 
             std::vector<double> backupState = netlist.getStateV();
 
-            netlist.inspectComponents([](const Component& comp, int extraIdx) {
+            netlist.inspectComponents([](Component& comp, MnaIndex extraIdx) {
                 (void)extraIdx;
-                const_cast<Component&>(comp).saveCheckpoint();
+                comp.saveCheckpoint();
             });
 
             // --------------------------------------------------------------------
@@ -102,34 +102,7 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
             ctx.time = t + gamma * dt;
             ctx.dt = dt;
             ctx.orderStep = 1;
-            
-            ctx.currentIterV = &netlist.getStateV();
-            ctx.historicStepV = &netlist.getHistoricV();
-            ctx.midpointStepV = &netlist.getMidpointV();
 
-            if (!netlist.runNewtonRaphson(ctx, options.maxIterations, options.relTol, options.absTol)) {
-                dt *= 0.5; // Cut step directly without clamping to allow termination
-                netlist.getStateV() = backupState; 
-                netlist.inspectComponents([](const Component& comp, int extraIdx) {
-                    (void)extraIdx;
-                    const_cast<Component&>(comp).restoreCheckpoint();
-                });
-                continue;
-            }
-            
-            netlist.getMidpointV() = netlist.getStateV();
-            
-            netlist.inspectComponents([&ctx](const Component& comp, int extraIdx) {
-                (void)extraIdx;
-                const_cast<Component&>(comp).updateHistory(ctx);
-            });
-
-            // --------------------------------------------------------------------
-            // PHASE 2: BDF2 COMPANION BOUNDARY STEP (t + gamma * dt -> t + dt)
-            // --------------------------------------------------------------------
-            ctx.time = t + dt;
-            ctx.orderStep = 2;
-            
             ctx.currentIterV = &netlist.getStateV();
             ctx.historicStepV = &netlist.getHistoricV();
             ctx.midpointStepV = &netlist.getMidpointV();
@@ -137,9 +110,36 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
             if (!netlist.runNewtonRaphson(ctx, options.maxIterations, options.relTol, options.absTol)) {
                 dt *= 0.5;
                 netlist.getStateV() = backupState;
-                netlist.inspectComponents([](const Component& comp, int extraIdx) {
+                netlist.inspectComponents([](Component& comp, MnaIndex extraIdx) {
                     (void)extraIdx;
-                    const_cast<Component&>(comp).restoreCheckpoint();
+                    comp.restoreCheckpoint();
+                });
+                continue;
+            }
+
+            netlist.getMidpointV() = netlist.getStateV();
+
+            netlist.inspectComponents([&ctx](Component& comp, MnaIndex extraIdx) {
+                (void)extraIdx;
+                comp.updateHistory(ctx);
+            });
+
+            // --------------------------------------------------------------------
+            // PHASE 2: BDF2 COMPANION BOUNDARY STEP (t + gamma * dt -> t + dt)
+            // --------------------------------------------------------------------
+            ctx.time = t + dt;
+            ctx.orderStep = 2;
+
+            ctx.currentIterV = &netlist.getStateV();
+            ctx.historicStepV = &netlist.getHistoricV();
+            ctx.midpointStepV = &netlist.getMidpointV();
+
+            if (!netlist.runNewtonRaphson(ctx, options.maxIterations, options.relTol, options.absTol)) {
+                dt *= 0.5;
+                netlist.getStateV() = backupState;
+                netlist.inspectComponents([](Component& comp, MnaIndex extraIdx) {
+                    (void)extraIdx;
+                    comp.restoreCheckpoint();
                 });
                 continue;
             }
@@ -149,32 +149,31 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
             if (error > options.relTol) {
                 dt *= 0.5;
                 netlist.getStateV() = backupState;
-                netlist.inspectComponents([](const Component& comp, int extraIdx) {
+                netlist.inspectComponents([](Component& comp, MnaIndex extraIdx) {
                     (void)extraIdx;
-                    const_cast<Component&>(comp).restoreCheckpoint();
+                    comp.restoreCheckpoint();
                 });
                 continue;
             }
 
             // Step accepted: Commit step updates permanently
-            netlist.inspectComponents([&ctx](const Component& comp, int extraIdx) {
+            netlist.inspectComponents([&ctx](Component& comp, MnaIndex extraIdx) {
                 (void)extraIdx;
-                const_cast<Component&>(comp).updateHistory(ctx);
+                comp.updateHistory(ctx);
             });
 
             netlist.getHistoricV() = netlist.getStateV();
             t += dt;
 
-            // Stream step outputs progressively
+            // Stream step outputs progressively via bounds-checked NetNode lookups
             const auto& state = netlist.getCurrentState();
-            vIn = (inputNode > 0 && static_cast<size_t>(inputNode - 1) < state.size()) ? state[inputNode - 1] : 0.0;
-            vOut = (outputNode > 0 && static_cast<size_t>(outputNode - 1) < state.size()) ? state[outputNode - 1] : 0.0;
+            vIn  = getSafeVoltage(state, inputNode);
+            vOut = getSafeVoltage(state, outputNode);
 
-            std::cout << std::left << std::setw(12) << t 
-                      << std::setw(15) << vIn 
+            std::cout << std::left << std::setw(12) << t
+                      << std::setw(15) << vIn
                       << std::setw(15) << vOut << "\n";
 
-            // Progressive adaptive timestep width adjustment bounds
             if (error < options.relTol * 0.5) {
                 dt = std::min(dt * 1.5, options.maxDt);
             }
@@ -185,14 +184,12 @@ void ACCircuit::runTransientWaveformAnalysis(const AcSimulationOptions& options,
     std::cout << "====================================================================================\n" << std::endl;
 }
 
-
-
 void ACCircuit::runFrequencySweepAnalysis(double startFreq, double stopFreq, int pointsCount) {
     std::cout << "\n==============================================================================================\n"
               << "                                  AC SIMULATION OUTPUT TABLE                                  \n"
               << "==============================================================================================\n"
-              << std::left << std::setw(12) << "Freq(Hz)" 
-              << std::setw(16) << "Node_2 Mag(V)" << std::setw(16) << "Node_2 Phase(°)" 
+              << std::left << std::setw(12) << "Freq(Hz)"
+              << std::setw(16) << "Node_2 Mag(V)" << std::setw(16) << "Node_2 Phase(°)"
               << std::setw(16) << "Node_3 Mag(V)" << std::setw(16) << "Node_3 Phase(°)" << "\n"
               << "----------------------------------------------------------------------------------------------\n";
 
@@ -207,8 +204,27 @@ void ACCircuit::runFrequencySweepAnalysis(double startFreq, double stopFreq, int
         netlist.buildSparsityPattern();
         systemSize = netlist.getTotalSystemSize();
     }
-    // Ambil kondisi DC Operating Point sebagai fondasi linearisasi komponen non-linear (seperti Kapasitansi Dioda/MOSFET)
-    const std::vector<double>& dcState = netlist.getCurrentState();
+
+    // Solve the DC Operating Point first so nonlinear devices (MOSFET, BJT, Diode,
+    // and BSIM-CMG FinFET/RibbonFET/GAA-FET) are linearized around their true DC bias
+    MnaMatrixContext dcCtx{
+        netlist.getGMatrix(),
+        netlist.getBVector(),
+        &netlist.getStateV(),
+        &netlist.getHistoricV(),
+        &netlist.getMidpointV(),
+        0.0,   // time
+        0.0,   // dt (0.0 for static DC)
+        0,     // orderStep = 0 (DC Operating Point)
+        MnaIndex{}
+    };
+
+    if (!netlist.runNewtonRaphson(dcCtx, 150, 1e-3, 1e-6)) {
+        std::cerr << "Warning: DC Operating Point did not fully converge prior to AC Sweep; "
+                  << "linearizing around best available state.\n";
+    }
+
+    const std::vector<double> dcState = netlist.getCurrentState();
 
     // Initialize complex sparse matrices dynamically from the netlist structural pattern
     CsrMatrixComplex A_complex, L_complex, U_complex;
@@ -219,12 +235,16 @@ void ACCircuit::runFrequencySweepAnalysis(double startFreq, double stopFreq, int
     std::vector<std::complex<double>> B_complex(systemSize, std::complex<double>(0.0, 0.0));
 
     double logStart = std::log10(std::max(startFreq, 1e-3));
-    double logStop = std::log10(std::max(stopFreq, 1e-3));
-    double logStep = (pointsCount > 1) ? (logStop - logStart) / (pointsCount - 1) : 0.0;
+    double logStop  = std::log10(std::max(stopFreq, 1e-3));
+    double logStep  = (pointsCount > 1) ? (logStop - logStart) / (pointsCount - 1) : 0.0;
+
+    // Pre-resolve type-safe MnaIndex coordinates for Node 2 and Node 3
+    const MnaIndex mNode2 = MnaIndex::fromNetNode(NetNode{2});
+    const MnaIndex mNode3 = MnaIndex::fromNetNode(NetNode{3});
 
     // Automated Multi-Frequency Sweep Integration Loop
     for (int i = 0; i < pointsCount; ++i) {
-        double freq = std::pow(10.0, logStart + i * logStep);
+        double freq  = std::pow(10.0, logStart + i * logStep);
         double omega = 2.0 * M_PI * freq;
 
         A_complex.zero();
@@ -232,14 +252,13 @@ void ACCircuit::runFrequencySweepAnalysis(double startFreq, double stopFreq, int
         U_complex.zero();
         std::fill(B_complex.begin(), B_complex.end(), std::complex<double>(0.0, 0.0));
 
-        // Fully Automated AC Phasor Stamping Pass across all netlist elements
-        netlist.inspectComponents([&A_complex, &B_complex, omega, &dcState](const Component& comp, int extraIdx) {
-            (void)extraIdx; // Bypass legacy unallocated matrix counters cleanly
-            const_cast<Component&>(comp).stampAC(A_complex, B_complex, omega, dcState);
+        // Stamp small-signal AC phasor admittances across all netlist elements
+        netlist.inspectComponents([&A_complex, &B_complex, omega, &dcState](Component& comp, MnaIndex extraIdx) {
+            (void)extraIdx;
+            comp.stampAC(A_complex, B_complex, omega, dcState);
         });
 
         try {
-            // Re-initialize factorization layers dynamically on each loop to prevent column dimension drift
             L_complex.initializeFromPattern(netlist.getGMatrix());
             U_complex.initializeFromPattern(netlist.getGMatrix());
 
@@ -249,9 +268,11 @@ void ACCircuit::runFrequencySweepAnalysis(double startFreq, double stopFreq, int
 
             std::vector<std::complex<double>> X_complex = CircuitMath::luSolveComplex(L_complex, U_complex, P_complex, B_complex);
 
-            // Extract target node scalar phasors cleanly (Node 2 -> Index 1, Node 3 -> Index 2)
-            std::complex<double> v2_phasor = (systemSize >= 2) ? X_complex[1] : std::complex<double>(0.0, 0.0);
-            std::complex<double> v3_phasor = (systemSize >= 3) ? X_complex[2] : std::complex<double>(0.0, 0.0);
+            int numNodes = netlist.getNumNodes();
+            std::complex<double> v2_phasor = (mNode2.isValid() && mNode2.idx < numNodes && static_cast<size_t>(mNode2.idx) < X_complex.size())
+                                           ? X_complex[mNode2.idx] : std::complex<double>(0.0, 0.0);
+            std::complex<double> v3_phasor = (mNode3.isValid() && mNode3.idx < numNodes && static_cast<size_t>(mNode3.idx) < X_complex.size())
+                                           ? X_complex[mNode3.idx] : std::complex<double>(0.0, 0.0);
 
             double v2_mag = std::abs(v2_phasor);
             double v2_deg = std::arg(v2_phasor) * 180.0 / M_PI;
@@ -272,7 +293,7 @@ void ACCircuit::runFrequencySweepAnalysis(double startFreq, double stopFreq, int
                     << v3_db << "," << v3_deg << "\n";
 
         } catch (const std::exception& e) {
-            std::cerr << "Warning: Frequency step failure at " << freq 
+            std::cerr << "Warning: Frequency step failure at " << freq
                       << " Hz due to solver abort: " << e.what() << std::endl;
         }
     }
@@ -280,4 +301,5 @@ void ACCircuit::runFrequencySweepAnalysis(double startFreq, double stopFreq, int
     std::cout << "----------------------------------------------------------------------------------------------\n";
     std::cout << "Automated AC Sweep analysis finished. Bode datasets exported to bode_plot_data.csv" << std::endl;
 }
+
 

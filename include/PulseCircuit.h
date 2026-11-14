@@ -1,7 +1,9 @@
 // PulseCircuit.h
 #pragma once
 #include "Netlist.h"
+#include "CircuitComponents.h"
 #include <string>
+#include <utility>
 #include <vector>
 
 struct PulseSimulationOptions {
@@ -22,17 +24,22 @@ private:
 public:
     explicit PulseCircuit(Netlist& netlistInstance);
 
-    void detectAndPrintCauseEffectNodes(std::vector<int>& causevector, std::vector<int>& effectvector);
+    void detectAndPrintCauseEffectNodes(std::vector<NetNode>& causevector,
+                                        std::vector<NetNode>& effectvector);
 
-    // Automatically scans the circuit topology, extracts Cause and Effect nodes, and maps them as differential measurement pairs relative to Ground (Node 0).
-    void autoGenerateMonitorPairs(std::vector<std::pair<int, int>>& monitorPairs);
+    // Automatically scans the circuit topology, extracts Cause and Effect NetNodes,
+    // and maps them as differential measurement pairs relative to Ground (NetNode{0}).
+    void autoGenerateMonitorPairs(std::vector<std::pair<NetNode, NetNode>>& monitorPairs);
+
     // Dynamic inspection to verify if the model space contains valid active elements
     bool isPulseCircuit();
 
-    // Resolves a single standalone non-linear transient step handling dual-phase TR-BDF2 updates
+    // Resolves a single standalone nonlinear transient step handling dual-phase TR-BDF2 updates
     bool solveTransientStep(MnaMatrixContext& ctx, double targetTime, double currentDt, int stepPhase);
 
-    // Generates a comprehensive transient metric table and logs data into a CSV file. Evaluates custom differential node coordinate pairs dynamically.
-     void runPulseTransientAnalysis(const PulseSimulationOptions& options, const std::vector<std::pair<int, int>>& monitorPairs);
+    // Generates a comprehensive transient metric table and logs data into a CSV file.
+    // Evaluates custom differential NetNode pairs dynamically.
+    void runPulseTransientAnalysis(const PulseSimulationOptions& options,
+                                   const std::vector<std::pair<NetNode, NetNode>>& monitorPairs);
 };
 

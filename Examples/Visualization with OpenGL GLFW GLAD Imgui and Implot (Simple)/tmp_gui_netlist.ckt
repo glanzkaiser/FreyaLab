@@ -1,7 +1,0 @@
-* New FreyaLab Interactive Project
-V1 1 0 5.0
-R1 1 2 1k
-R2 1 2 5k
-C1 2 0 10u
-R3 3 0 10k
-V2 2 3 2.5u

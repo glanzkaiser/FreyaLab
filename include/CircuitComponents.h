@@ -10,6 +10,76 @@
 struct CsrMatrix; 
 struct CsrMatrixComplex;
 
+// Represents a 1-based netlist node (0 = Ground)
+struct NetNode {
+    int id = 0;
+    bool isGround() const { return id <= 0; }
+    bool operator==(const NetNode& other) const { return id == other.id; }
+    bool operator!=(const NetNode& other) const { return id != other.id; }
+    bool operator<(const NetNode& other) const { return id < other.id; }
+};
+
+// Represents a 0-based linear solver row/column (-1 = Ground / invalid)
+struct MnaIndex {
+    int idx = -1;
+    bool isValid() const { return idx >= 0; }
+    static MnaIndex fromNetNode(NetNode n) { return MnaIndex{ n.id - 1 }; }
+    static MnaIndex fromExtraRow(int rawIdx) { return MnaIndex{ rawIdx }; }
+    bool operator==(const MnaIndex& other) const { return idx == other.idx; }
+    bool operator!=(const MnaIndex& other) const { return idx != other.idx; }
+    bool operator<(const MnaIndex& other) const { return idx < other.idx; }
+};
+
+// Bounds-checked voltage lookup (converts 1-based NetNode to 0-based MnaIndex safely)
+inline double getSafeVoltage(const std::vector<double>& state, NetNode node) {
+    if (node.isGround()) return 0.0;
+    MnaIndex m = MnaIndex::fromNetNode(node);
+    if (!m.isValid() || static_cast<size_t>(m.idx) >= state.size()) return 0.0;
+    return state[m.idx];
+}
+
+inline double getSafeVoltage(const std::vector<double>* state, NetNode node) {
+    if (!state) return 0.0;
+    return getSafeVoltage(*state, node);
+}
+
+// Bounds-checked RHS vector injection using 0-based MnaIndex
+inline void addSafeRhs(std::vector<double>& B, MnaIndex row, double val) {
+    if (row.isValid() && static_cast<size_t>(row.idx) < B.size()) {
+        B[row.idx] += val;
+    }
+}
+
+inline void addSafeRhs(std::vector<std::complex<double>>& B_c, MnaIndex row, std::complex<double> val) {
+    if (row.isValid() && static_cast<size_t>(row.idx) < B_c.size()) {
+        B_c[row.idx] += val;
+    }
+}
+
+// Bounds-checked RHS vector assignment using 0-based MnaIndex
+inline void setSafeRhs(std::vector<double>& B, MnaIndex row, double val) {
+    if (row.isValid() && static_cast<size_t>(row.idx) < B.size()) {
+        B[row.idx] = val;
+    }
+}
+// Bounds-checked complex RHS vector assignment using 0-based MnaIndex
+inline void setSafeRhs(std::vector<std::complex<double>>& B_c, MnaIndex row, std::complex<double> val) {
+    if (row.isValid() && static_cast<size_t>(row.idx) < B_c.size()) {
+        B_c[row.idx] = val;
+    }
+}
+
+// Bounds-checked read helper for 0-based extra MNA rows (e.g., branch currents)
+inline double getSafeExtraValue(const std::vector<double>& state, MnaIndex row) {
+    if (!row.isValid() || static_cast<size_t>(row.idx) >= state.size()) return 0.0;
+    return state[row.idx];
+}
+
+inline double getSafeExtraValue(const std::vector<double>* state, MnaIndex row) {
+    if (!state) return 0.0;
+    return getSafeExtraValue(*state, row);
+}
+
 enum class SourceType { DC, AC, PULSE };
 
 // High-level MNA Primitive Categories
@@ -34,18 +104,8 @@ enum class GateType { AND, OR, NAND, NOR, XOR, XNOR, NOT };
 enum class BatteryChemistry { LEAD_ACID, LITHIUM_ION, NIMH };
 enum class SignalShape { SINE, SQUARE, TRIANGLE, SAWTOOTH, HARMONIC_PULSE };
 
-/**
- * Safely converts 1-based circuit netlist nodes to 0-based internal matrix vector states.
- * Automatically resolves Ground Node (0) to a constant 0.0V.
- * The 'inline' keyword prevents multiple definition link errors across translation units.
- */
-inline double getSafeVoltage(const std::vector<double>& state, int node1Based) {
-    if (node1Based <= 0) return 0.0; // Node 0 or negative represents Ground reference (0V)
-    if (node1Based - 1 >= static_cast<int>(state.size())) return 0.0; // Out-of-bounds vector protection
-    return state[node1Based - 1]; // Convert to internal 0-based tracking coordinate
-}
 
-// TR-BDF2 Integrated State Matrix Context (Fixed Pointer Layer Indirection)
+// TR-BDF2 Integrated State Matrix Context (Type-Safe MnaIndex Layer)
 struct MnaMatrixContext {
     CsrMatrix& G;
     std::vector<double>& B;
@@ -55,9 +115,8 @@ struct MnaMatrixContext {
     double time = 0.0;
     double dt = 1e-6;
     int orderStep = 0;                        // 0 = Static DC, 1 = TR Midpoint, 2 = BDF2 Step Phase
-    int assignedExtraIdx = -1;
+    MnaIndex assignedExtraIdx{};              // Default invalid (-1)
 };
-
 
 struct SimulationContext {
     const std::vector<double>& state;
@@ -70,64 +129,70 @@ class Component {
 protected:
     std::string name;
     ComponentType type;
-    std::vector<int> nodes;
-    int assignedExtraRowIdx = -1;
+    std::vector<NetNode> nodes;
+    MnaIndex assignedExtraRowIdx{};
 
 public:
-    Component(const std::string& name, ComponentType type, const std::vector<int>& nodes) 
+    Component(const std::string& name, ComponentType type, const std::vector<NetNode>& nodes)
         : name(name), type(type), nodes(nodes) {}
-    
+
     virtual ~Component() = default;
 
     std::string getName() const { return name; }
     ComponentType getType() const { return type; }
-    const std::vector<int>& getNodes() const { return nodes; }
-    
-    // Dynamic Extra MNA Row Topology Tracking 
+    const std::vector<NetNode>& getNodes() const { return nodes; }
+
+    // Dynamic Extra MNA Row Topology Tracking
     virtual int getExtraRowRequirement() const { return 0; }
     virtual void allocateRows(int& globalExtraRowCounter) {
         int req = getExtraRowRequirement();
         if (req > 0) {
-            assignedExtraRowIdx = globalExtraRowCounter;
+            assignedExtraRowIdx = MnaIndex::fromExtraRow(globalExtraRowCounter);
             globalExtraRowCounter += req;
         }
     }
-    void setAssignedExtraIdx(int idx) { assignedExtraRowIdx = idx; }
-    int getAssignedExtraIdx() const { return assignedExtraRowIdx; }
+    void setAssignedExtraIdx(MnaIndex idx) { assignedExtraRowIdx = idx; }
+    MnaIndex getAssignedExtraIdx() const { return assignedExtraRowIdx; }
 
     // Numerical Solver Pipeline Hooks
     virtual void stamp(MnaMatrixContext& ctx) = 0;
     virtual void updateHistory(const MnaMatrixContext& ctx) {}
-    virtual void getSparsityPattern(std::vector<std::pair<int, int>>& patterns, int extraIdx = -1) const = 0;
-    virtual double calculateCurrent(const SimulationContext& simCtx, int extraIdx = -1) const = 0;
+    virtual void getSparsityPattern(std::vector<std::pair<MnaIndex, MnaIndex>>& patterns,
+                                    MnaIndex extraIdx = MnaIndex{}) const = 0;
+    virtual double calculateCurrent(const SimulationContext& simCtx,
+                                    MnaIndex extraIdx = MnaIndex{}) const = 0;
     virtual double calculateVoltageDrop(const std::vector<double>& state) const = 0;
-    
+
     // Phasor-Domain Small-Signal Multi-Frequency Stamping Interface
-    virtual void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c, double omega, const std::vector<double>& dcState) {
+    virtual void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c,
+                         double omega, const std::vector<double>& dcState) {
         (void)A_c; (void)B_c; (void)omega; (void)dcState;
     }
-    
+
     // Checkpoint Rollback Pipeline Interfaces
     virtual void resetState() {}
     virtual void saveCheckpoint() {}
     virtual void restoreCheckpoint() {}
 
-    virtual double getValue() const { return 0.0; } 
+    virtual double getValue() const { return 0.0; }
     // Parametric Value Mutation Interface for DC Sweeps and Optimizers
     virtual void setValue(double newValue) { (void)newValue; }
 };
+
 
 // Primitives Declarations
 class Resistor : public Component {
     double value;
 public:
-    Resistor(const std::string& name, const std::vector<int>& nodes, double r);
+    Resistor(const std::string& name, const std::vector<NetNode>& nodes, double r);
     void stamp(MnaMatrixContext& ctx) override;
-    void getSparsityPattern(std::vector<std::pair<int, int>>& patterns, int extraIdx = -1) const override;
+    void getSparsityPattern(std::vector<std::pair<MnaIndex, MnaIndex>>& patterns,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
     double calculateVoltageDrop(const std::vector<double>& state) const override;
-    double calculateCurrent(const SimulationContext& simCtx, int extraIdx = -1) const override;
-    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c, 
-             double omega, const std::vector<double>& dcState) override;
+    double calculateCurrent(const SimulationContext& simCtx,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
+    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c,
+                 double omega, const std::vector<double>& dcState) override;
 
     void setValue(double newValue) override { value = newValue; }
     double getValue() const override { return value; }
@@ -145,13 +210,15 @@ private:
     double fc = 0.5;          // Forward-bias capacitance coefficient symmetry boundary
 
 public:
-    Diode(const std::string& name, const std::vector<int>& nodes);
+    Diode(const std::string& name, const std::vector<NetNode>& nodes);
     void stamp(MnaMatrixContext& ctx) override;
-    void getSparsityPattern(std::vector<std::pair<int, int>>& patterns, int extraIdx = -1) const override;
-    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c, 
-             double omega, const std::vector<double>& dcState) override;
+    void getSparsityPattern(std::vector<std::pair<MnaIndex, MnaIndex>>& patterns,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
+    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c,
+                 double omega, const std::vector<double>& dcState) override;
     double calculateVoltageDrop(const std::vector<double>& state) const override;
-    double calculateCurrent(const SimulationContext& simCtx, int extraIdx = -1) const override;
+    double calculateCurrent(const SimulationContext& simCtx,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
 };
 
 class Capacitor : public Component {
@@ -160,16 +227,18 @@ class Capacitor : public Component {
     double q_hist_nc = 0.0;
     double q_hist_n_checkpoint = 0.0;
     double q_hist_nc_checkpoint = 0.0;
-    double last_dt = 1e-3; 
+    double last_dt = 1e-3;
 public:
-    Capacitor(const std::string& name, const std::vector<int>& nodes, double c);
+    Capacitor(const std::string& name, const std::vector<NetNode>& nodes, double c);
     void stamp(MnaMatrixContext& ctx) override;
     void updateHistory(const MnaMatrixContext& ctx) override;
-    void getSparsityPattern(std::vector<std::pair<int, int>>& patterns, int extraIdx = -1) const override;
+    void getSparsityPattern(std::vector<std::pair<MnaIndex, MnaIndex>>& patterns,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
     double calculateVoltageDrop(const std::vector<double>& state) const override;
-    double calculateCurrent(const SimulationContext& simCtx, int extraIdx = -1) const override;
-    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c, 
-             double omega, const std::vector<double>& dcState) override;
+    double calculateCurrent(const SimulationContext& simCtx,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
+    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c,
+                 double omega, const std::vector<double>& dcState) override;
 
     double getValue() const override { return capacitance; }
     void saveCheckpoint() override;
@@ -184,16 +253,18 @@ class Inductor : public Component {
     double i_hist_nc_checkpoint = 0.0;
 
 public:
-    Inductor(const std::string& name, const std::vector<int>& nodes, double l);
+    Inductor(const std::string& name, const std::vector<NetNode>& nodes, double l);
     int getExtraRowRequirement() const override { return 1; }
-    void allocateRows(int& globalExtraRowCounter) override; 
+    void allocateRows(int& globalExtraRowCounter) override;
     void stamp(MnaMatrixContext& ctx) override;
     void updateHistory(const MnaMatrixContext& ctx) override;
-    void getSparsityPattern(std::vector<std::pair<int, int>>& patterns, int extraIdx = -1) const override;
+    void getSparsityPattern(std::vector<std::pair<MnaIndex, MnaIndex>>& patterns,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
     double calculateVoltageDrop(const std::vector<double>& state) const override;
-    double calculateCurrent(const SimulationContext& simCtx, int extraIdx = -1) const override;
-    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c, 
-             double omega, const std::vector<double>& dcState) override;
+    double calculateCurrent(const SimulationContext& simCtx,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
+    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c,
+                 double omega, const std::vector<double>& dcState) override;
     double getValue() const override { return inductance; }
     void saveCheckpoint() override;
     void restoreCheckpoint() override;
@@ -211,19 +282,21 @@ private:
     double Cgd0 = 0.5e-12;     // Zero-bias Gate-Drain overlap capacitance (0.5 pF)
 
 public:
-    Mosfet(const std::string& name, const std::vector<int>& nodes, bool nChannel);
-    
+    Mosfet(const std::string& name, const std::vector<NetNode>& nodes, bool nChannel);
+
     // Core Numerical Solver Pipeline Hooks
     void stamp(MnaMatrixContext& ctx) override;
-    void getSparsityPattern(std::vector<std::pair<int, int>>& patterns, int extraIdx = -1) const override;
-    
+    void getSparsityPattern(std::vector<std::pair<MnaIndex, MnaIndex>>& patterns,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
+
     // Multi-Frequency Small-Signal Linearized Phasor Overrides
-    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c, 
-             double omega, const std::vector<double>& dcState) override;
+    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c,
+                 double omega, const std::vector<double>& dcState) override;
 
     // Post-Facto Telemetry Probing and Waveform Trackers
     double calculateVoltageDrop(const std::vector<double>& state) const override;
-    double calculateCurrent(const SimulationContext& simCtx, int extraIdx = -1) const override;
+    double calculateCurrent(const SimulationContext& simCtx,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
 };
 
 class VbicBjtAdvanced : public Component {
@@ -246,36 +319,39 @@ private:
     double tr = 10e-9;         // Reverse transit time (10 ns)
 
 public:
-    VbicBjtAdvanced(const std::string& name, const std::vector<int>& nodes, bool npnVariant);
-    
+    VbicBjtAdvanced(const std::string& name, const std::vector<NetNode>& nodes, bool npnVariant);
+
     // Core Numerical Solver Pipeline Hooks
     void stamp(MnaMatrixContext& ctx) override;
-    void getSparsityPattern(std::vector<std::pair<int, int>>& patterns, int extraIdx = -1) const override;
-    
+    void getSparsityPattern(std::vector<std::pair<MnaIndex, MnaIndex>>& patterns,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
+
     // Multi-Frequency Small-Signal Linearized Phasor Overrides
-    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c, 
-             double omega, const std::vector<double>& dcState) override;
-    
+    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c,
+                 double omega, const std::vector<double>& dcState) override;
+
     // Post-Facto Telemetry Probing and Waveform Trackers
     double calculateVoltageDrop(const std::vector<double>& state) const override;
-    double calculateCurrent(const SimulationContext& simCtx, int extraIdx = -1) const override;
+    double calculateCurrent(const SimulationContext& simCtx,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
 };
-
 
 class VoltageSource : public Component {
     double value;
     double acMagnitude = 1.0;
     double acPhase = 0.0;
 public:
-    VoltageSource(const std::string& name, const std::vector<int>& nodes, double v);
+    VoltageSource(const std::string& name, const std::vector<NetNode>& nodes, double v);
     int getExtraRowRequirement() const override { return 1; }
     void allocateRows(int& globalExtraRowCounter) override;
     void stamp(MnaMatrixContext& ctx) override;
-    void getSparsityPattern(std::vector<std::pair<int, int>>& patterns, int extraIdx = -1) const override;
+    void getSparsityPattern(std::vector<std::pair<MnaIndex, MnaIndex>>& patterns,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
     double calculateVoltageDrop(const std::vector<double>& state) const override;
-    double calculateCurrent(const SimulationContext& simCtx, int extraIdx = -1) const override;
-    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c, 
-             double omega, const std::vector<double>& dcState) override;
+    double calculateCurrent(const SimulationContext& simCtx,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
+    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c,
+                 double omega, const std::vector<double>& dcState) override;
     double getValue() const override { return value; }
     void setAcParameters(double mag, double phase);
     void setValue(double newValue) override { value = newValue; }
@@ -289,15 +365,18 @@ private:
     double outputLowV;
     double outputResistance;
 public:
-    BehaviorLogicGateComponent(const std::string& name, const std::vector<int>& nodes, GateType gateType, 
+    BehaviorLogicGateComponent(const std::string& name, const std::vector<NetNode>& nodes, GateType gateType,
                                double vThresh = 2.5, double vHigh = 5.0, double vLow = 0.0, double rOut = 10.0);
     int getExtraRowRequirement() const override { return 1; }
-    void allocateRows(int& globalExtraRowCounter) override; 
+    void allocateRows(int& globalExtraRowCounter) override;
     void stamp(MnaMatrixContext& ctx) override;
-    void getSparsityPattern(std::vector<std::pair<int, int>>& patterns, int extraIdx = -1) const override;
+    void getSparsityPattern(std::vector<std::pair<MnaIndex, MnaIndex>>& patterns,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
     double calculateVoltageDrop(const std::vector<double>& state) const override;
-    double calculateCurrent(const SimulationContext& simCtx, int extraIdx = -1) const override;
-    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c, 
-             double omega, const std::vector<double>& dcState) override;
+    double calculateCurrent(const SimulationContext& simCtx,
+                            MnaIndex extraIdx = MnaIndex{}) const override;
+    void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c,
+                 double omega, const std::vector<double>& dcState) override;
 };
+
 

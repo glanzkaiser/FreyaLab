@@ -7,7 +7,7 @@
 class DCCircuit {
 private:
     Netlist& netlist;
-    
+
     // Aligns, calculates, and prints component parameters into the console matrix table
     void printOperatingPointTable(const std::vector<double>& state);
 

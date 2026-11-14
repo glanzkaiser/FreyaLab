@@ -1,13 +1,14 @@
+
 // Netlist.h
 #pragma once
 #include "CircuitComponents.h"
 #include "math.h"
-#include <vector>
+#include <cmath>
+#include <functional>
+#include <map>
 #include <memory>
 #include <string>
-#include <functional>
-#include <map>  
-#include <cmath>
+#include <vector>
 
 struct NetlistSimulationOptions {
     double startTime = 0.0;
@@ -22,7 +23,7 @@ struct NetlistSimulationOptions {
 
 class Netlist {
 private:
-    std::vector<std::shared_ptr<Component>> components; 
+    std::vector<std::shared_ptr<Component>> components;
     int numNodes = 0;
     int numExtraRows = 0;
     int totalSize = 0;
@@ -35,21 +36,25 @@ private:
 
     void analyzeTopology();
 
-    std::map<int, std::string> nodeNameMap;
+    std::map<NetNode, std::string> nodeNameMap;
+
 public:
     Netlist() = default;
 
-    void setNodeName(int nodeNum, const std::string& name) {
-        nodeNameMap[nodeNum] = name;
+    // Type-safe NetNode label registration and lookup
+    void setNodeName(NetNode node, const std::string& name) {
+        if (!node.isGround()) {
+            nodeNameMap[node] = name;
+        }
     }
 
-    std::string getNodeName(int nodeNum) const {
-        if (nodeNum == 0) return "GND";
-        auto it = nodeNameMap.find(nodeNum);
+    std::string getNodeName(NetNode node) const {
+        if (node.isGround()) return "GND";
+        auto it = nodeNameMap.find(node);
         if (it != nodeNameMap.end()) {
             return it->second;
         }
-        return "  ";
+        return "Node_" + std::to_string(node.id);
     }
 
     void printComponentNodes() const;
@@ -60,31 +65,30 @@ public:
     bool runNewtonRaphson(MnaMatrixContext& ctx, int maxIter, double relTol, double absTol);
     double estimateLocalTruncationError(double dt, double gamma, double relTol, double absTol);
     void simulate(const NetlistSimulationOptions& options);
-    
+
     // Public Accessor Infrastructure for Solver Bridges
     const std::vector<double>& getCurrentState() const { return stateV; }
     int getTotalSystemSize() const { return totalSize; }
     int getNumNodes() const { return numNodes; }
 
     const CsrMatrix& getGMatrix() const { return G; }
-    CsrMatrix& getGMatrix() { return G; }  // ADD THIS LINE: Allows solver context writes!
+    CsrMatrix& getGMatrix() { return G; }
 
     // References to vectors for pointer-based context mapping
     std::vector<double>& getStateV() { return stateV; }
     std::vector<double>& getHistoricV() { return historicV; }
     std::vector<double>& getMidpointV() { return midpointV; }
-    // for Visualization.cpp
     std::vector<double>& getBVector() { return B; }
 
-    // Fully Generic Topology Inspection Interface
-    void inspectComponents(std::function<void(const Component&, int extraIdx)> callback) const;
+    // Type-Safe Topology Inspection Interfaces (passing MnaIndex for extra rows)
+    void inspectComponents(std::function<void(const Component&, MnaIndex extraIdx)> callback) const;
 
-   // ADDED: Non-const iterator option allows clean history/value modifications inside analysis scripts safely
-    void inspectComponents(std::function<void(Component&, int extraIdx)> callback) {
+    void inspectComponents(std::function<void(Component&, MnaIndex extraIdx)> callback) {
         for (const auto& comp : components) {
-            callback(*comp, comp->getAssignedExtraIdx());
+            if (comp) {
+                callback(*comp, comp->getAssignedExtraIdx());
+            }
         }
     }
-
 };
 
