@@ -61,10 +61,11 @@ FreyaLab has been benchmarked extensively against classic dense simulation frame
 # Demos / Examples
 
 Add a component, delete a component, move the component, load/copy a SPICE netlist format (.txt) and the DC operating point table will show the voltage drop, current, and power for each component.
+We have 10 tabs on the bottom right so we can analyze the circuit: DC Operating Point, AC Transient Waveform, AC Simulation Output (Bode), Pulse Transient Output (TR-BDF2), Generic Node Phasors, Series RLC KVL Chain, Complex Impedance Z-Plane, Nyquist Stability, Power Quadrant (P-Q-S), Holistic Complex Impedance Z-Plane.
 
-<img src="https://github.com/glanzkaiser/FreyaLab/blob/main/images/FreyaLab1.png" width="73%">
+<img src="https://github.com/glanzkaiser/FreyaLab/blob/main/images/FreyaLabNov2026.gif" width="60%">
 
-<img src="https://github.com/glanzkaiser/FreyaLab/blob/main/images/FreyaLabDC.gif" width="60%">
+<img src="https://github.com/glanzkaiser/FreyaLab/blob/main/images/FreyaLabNov2026-2.gif" width="60%">
 
 
 #### Created on Blue Moon May 31st, 2026
