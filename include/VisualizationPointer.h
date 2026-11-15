@@ -1,31 +1,25 @@
 #pragma once
 
 #include "freyalab/Netlist.h"
-#include "freyalab/FileParser.h" // Fixed: Secure inclusion path tracking
+#include "freyalab/FileParser.h"
 #include <string>
 #include <vector>
 #include <map>
 
-// Symmetrical definition guard for OpenGL context bindings cleanly isolated
-#ifndef GLUINT_DEFINED
-typedef unsigned int GLuint;
-#define GLUINT_DEFINED
-#endif
-
-// FIX 1: Declared standard multi-channel 2D vertex footprint before usage tracks
+// Standard multi-channel 2D vertex footprint
 struct Vertex2D {
     float x, y;
     float r, g, b;
 };
 
 struct VisualComponent {
-    std::string name;                     // Unique descriptor identifier matching netlist primitives
-    std::string typeStr;                  // Device type name descriptor matching class signatures
-    float posX = 0.0f;                    // Localized model space horizontal coordinate 
-    float posY = 0.0f;                    // Localized model space vertical coordinate
-    float rotationAngle = 0.0f;           // Orientation parameter transformation degree tracking offset
-    bool isSelected = false;              // State tracking highlighting context flags
-    double scalarValue = 0.0;             // Real electrical rating scale metrics
+    std::string name;                        // Unique descriptor identifier matching netlist primitives
+    std::string typeStr;                     // Device type name descriptor matching class signatures
+    float posX = 0.0f;                       // Localized model space horizontal coordinate 
+    float posY = 0.0f;                       // Localized model space vertical coordinate
+    float rotationAngle = 0.0f;              // Orientation parameter transformation degree tracking offset
+    bool isSelected = false;                 // State tracking highlighting context flags
+    double scalarValue = 0.0;                // Real electrical rating scale metrics
     std::vector<std::string> connectedNodes; // Sequence tracking terminal connections
 };
 
@@ -40,10 +34,10 @@ enum class StimulusType {
 
 class FreyaLabVisualizer {
 public:
-    // Constructor 1: Optimized for pointer-binding frameworks (e.g., Visualization_Pointer.cpp)
+    // Constructor 1: Pointer-binding framework
     explicit FreyaLabVisualizer(Netlist* netlistInstance);
     
-    // Constructor 2: Standard fallback initialization reference wrapper (e.g., Visualization_Reference.cpp)
+    // Constructor 2: Reference wrapper overload
     explicit FreyaLabVisualizer(Netlist& netlistInstance);
 
     ~FreyaLabVisualizer() = default;
@@ -58,16 +52,14 @@ public:
     void synchronizeVisualsFromNetlist();
     void regenerateNetlistTextFromVisuals();
     
-    void handleCanvasInteraction(float mouseX, float yMouse, int viewW, int viewH, 
-                                 bool isClick, bool isDragging, float dragDx, float dragDy);
-    void renderDashboardGUI();
+    void handleCanvasInteraction(float /*mouseX*/, float /*yMouse*/, int /*viewW*/, int /*viewH*/, 
+                                 bool /*isClick*/, bool /*isDragging*/, float /*dragDx*/, float /*dragDy*/) {}
+    void renderDashboardGUI() {}
 
 public:
     // ========================================================================
     // PUBLIC WORKSPACE STATE STORAGE CELLS & DATA REGISTERS
     // ========================================================================
-    // FIXED LAYER: Backing variables unified into a single pointer format to clear 
-
     Netlist* netlistPtr = nullptr;
     FileParser parser;
     
@@ -86,9 +78,17 @@ public:
     std::vector<double> plotOutputWaveform;
     std::vector<double> plotFrequencies;
     std::vector<double> plotBodeMagnitudeDb;
+    std::vector<double> plotNyquistReal;
+    std::vector<double> plotNyquistImag;
+
+    // --- Complex Power & Power Factor Metrics (Tabs 9 & 10) ---
+    double plotActivePowerP = 0.0;
+    double plotReactivePowerQ = 0.0;
+    double plotApparentPowerS = 0.0;
+    double plotPowerFactor = 1.0;
 
 private:
-    void buildSchematicGeometry(const Netlist& targetNetlist, std::vector<Vertex2D>& geometryVertices);
+    void buildSchematicGeometry(const Netlist& /*targetNetlist*/, std::vector<Vertex2D>& /*geometryVertices*/) {}
 
 private:
     // ========================================================================
@@ -102,8 +102,7 @@ private:
     float stimAcPhase = 0.0f;      
     float stimPulseLow = 0.0f;     
     float stimPulseHigh = 5.0f;    
-    float stimPulseWidth = 10e-6f;  
-    float stimPulsePeriod = 20e-6f; 
+    float stimPulseWidth = 10.0f;   // Dalam mikrodetik (10 us) agar cocok dengan slider ImGui
+    float stimPulsePeriod = 20.0f;  // Dalam mikrodetik (20 us) agar cocok dengan slider ImGui
 };
-
 
