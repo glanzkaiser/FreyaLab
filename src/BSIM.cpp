@@ -89,7 +89,7 @@ BsimCmgOsdiLoader& BsimCmgOsdiLoader::getGlobalInstance() {
     static BsimCmgOsdiLoader instance;
     if (!instance.attemptedLoad) {
         instance.attemptedLoad = true;
-        if (!instance.load("models/bsimcmg.osdi") && !instance.load("bsimcmg.osdi")) {
+        if (!instance.load("usr/include/freyalab/models/bsimcmg.osdi") && !instance.load("bsimcmg.osdi")) {
             std::cout << "[FreyaLab BSIM] 'models/bsimcmg.osdi' not found. "
                       << "Using built-in Phase-1 BSIM-CMG analytical physics engine.\n";
         }

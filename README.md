@@ -67,5 +67,9 @@ We have 10 tabs on the bottom right so we can analyze the circuit: DC Operating 
 
 <img src="https://github.com/glanzkaiser/FreyaLab/blob/main/images/FreyaLabNov2026-2.gif" width="60%">
 
+Mixed-signal example:
+
+<img src="https://github.com/glanzkaiser/FreyaLab/blob/main/images/FreyaLabMixedSignal.gif" width="60%">
+
 
 #### Created on Blue Moon May 31st, 2026

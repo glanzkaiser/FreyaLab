@@ -377,6 +377,7 @@ public:
                             MnaIndex extraIdx = MnaIndex{}) const override;
     void stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c,
                  double omega, const std::vector<double>& dcState) override;
+    GateType getGateType() const { return gate; }
 };
 
 

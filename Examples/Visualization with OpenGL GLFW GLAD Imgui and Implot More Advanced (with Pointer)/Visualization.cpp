@@ -60,6 +60,8 @@ FreyaLabVisualizer::FreyaLabVisualizer(Netlist& netlistInstance) : FreyaLabVisua
 static bool g_netlistParseSuccess = true;
 static std::string g_parserErrorMessage = "";
 static std::vector<std::complex<double>> g_latestAcNodePhasors;
+static float g_acTestFrequencyHz = 10000.0f; // Default 10 kHz AC test frequency
+
 static const char* vertexShaderSource = R"(
     #version 330 core
     layout (location = 0) in vec2 aPos;
@@ -130,7 +132,7 @@ static void drawVisualSchematicGL(
     std::vector<Vertex2D> vertices;
 
     // 1. Background Grid (40.0f spacing matching grid-snap)
-    float gridStep = 30.0f;
+    float gridStep = 40.0f;
     float worldLeft   = -scrollOffsetX / zoomLevel;
     float worldRight  = (static_cast<float>(schematicWidth) - scrollOffsetX) / zoomLevel;
     float worldTop    = -scrollOffsetY / zoomLevel;
@@ -536,7 +538,11 @@ void FreyaLabVisualizer::regenerateNetlistTextFromVisuals() {
             if (activeStimulus == StimulusType::DC_SINGLE) ss << " DC " << stimDcVolt;
             else if (activeStimulus == StimulusType::AC_SINUSOID) ss << " AC " << stimAcMag << " " << stimAcPhase;
             else if (activeStimulus == StimulusType::PULSE_SQUARE) {
-                ss << " PULSE(" << stimPulseLow << " " << stimPulseHigh << " 0 1n 1n " << (stimPulseWidth * 1e-6f) << " " << (stimPulsePeriod * 1e-6f) << ")";
+                // Use a realistic edge transition time (2% of pulse width, minimum 10 ns) so TR-BDF2 converges smoothly
+                float edgeTime = std::max(10e-9f, (stimPulseWidth * 1e-6f) * 0.02f);
+                ss << " PULSE(" << stimPulseLow << " " << stimPulseHigh << " 0 "
+                   << edgeTime << " " << edgeTime << " "
+                   << (stimPulseWidth * 1e-6f) << " " << (stimPulsePeriod * 1e-6f) << ")";
             }
         } else {
             if (vc.typeStr == "Resistor" || vc.typeStr == "Capacitor" || vc.typeStr == "Inductor") ss << " " << std::scientific << vc.scalarValue;
@@ -574,18 +580,18 @@ void FreyaLabVisualizer::synchronizeVisualsFromNetlist() {
             vc.scalarValue = comp.getValue();
             
             switch (comp.getType()) {
-                case ComponentType::RESISTOR:       vc.typeStr = "Resistor"; break;
-                case ComponentType::VOLTAGE_SOURCE: vc.typeStr = "V_Source"; break;
-                case ComponentType::CAPACITOR:      vc.typeStr = "Capacitor"; break;
-                case ComponentType::INDUCTOR:       vc.typeStr = "Inductor"; break;
-                case ComponentType::DIODE:          vc.typeStr = "Diode"; break;
-                case ComponentType::MOSFET:         vc.typeStr = "MOSFET"; break;
-                case ComponentType::FINFET:
-                case ComponentType::RIBBONFET:
-                case ComponentType::GAA_FET:        vc.typeStr = "FinFET"; break;
-                case ComponentType::BJT:            vc.typeStr = "BJT"; break;
-                case ComponentType::DIGITAL_IC:     vc.typeStr = "LogicGate"; break;
-                default:                            vc.typeStr = "Primitive"; break;
+                case ComponentType::RESISTOR:       		vc.typeStr = "Resistor"; break;
+                case ComponentType::VOLTAGE_SOURCE: 	vc.typeStr = "V_Source"; break;
+                case ComponentType::CAPACITOR:     	 	vc.typeStr = "Capacitor"; break;
+                case ComponentType::INDUCTOR: 		vc.typeStr = "Inductor"; break;
+                case ComponentType::DIODE:   			vc.typeStr = "Diode"; break;
+                case ComponentType::MOSFET:  			vc.typeStr = "MOSFET"; break;
+                case ComponentType::FINFET:			vc.typeStr = "FinFET"; break;
+                case ComponentType::RIBBONFET:		vc.typeStr = "RibbonFET"; break;
+                case ComponentType::GAA_FET:			vc.typeStr = "GAAFET"; break;
+                case ComponentType::BJT: 				vc.typeStr = "BJT"; break;
+                case ComponentType::DIGITAL_IC: 		vc.typeStr = "LogicGate"; break;
+                default:                   					vc.typeStr = "Primitive"; break;
             }
             
             for (const NetNode& node : comp.getNodes()) {
@@ -657,7 +663,7 @@ void FreyaLabVisualizer::executeActiveSimulation() {
                 pulseOptions.startTime = 0.0;     pulseOptions.stopTime = 200e-6; 
                 pulseOptions.initialDt = 10e-9;   pulseOptions.minDt = 1e-15;
                 pulseOptions.maxDt = 1e-5;        pulseOptions.relTol = 1e-3;
-                pulseOptions.absTol = 1e-6;       pulseOptions.maxIterations = 50;
+                pulseOptions.absTol = 1e-6;       pulseOptions.maxIterations = 80;
                 
                 netlistPtr->buildSparsityPattern();
                 double t = pulseOptions.startTime;
@@ -689,26 +695,38 @@ void FreyaLabVisualizer::executeActiveSimulation() {
                         // PHASE 1 (TR Midpoint)
                         ctx.time = t + gamma * dt; ctx.dt = gamma * dt; ctx.orderStep = 1;
                         if (!netlistPtr->runNewtonRaphson(ctx, pulseOptions.maxIterations, pulseOptions.relTol, pulseOptions.absTol)) {
-                            dt = std::max(dt * 0.5, pulseOptions.minDt);
-                            netlistPtr->getStateV() = backupState;
-                            netlistPtr->inspectComponents([](Component& comp, MnaIndex extraIdx) {
-                                (void)extraIdx; comp.restoreCheckpoint();
-                            });
-                            if (dt <= pulseOptions.minDt) throw std::runtime_error("Timestep hit floor boundary inside TR block.");
-                            continue;
+                            if (dt <= pulseOptions.minDt * 1.01) {
+                                // Fallback: try once with relaxed tolerance at floor timestep before aborting
+                                if (!netlistPtr->runNewtonRaphson(ctx, 150, pulseOptions.relTol * 10.0, pulseOptions.absTol * 10.0)) {
+                                    std::cerr << "[GUI Solver Warning] TR midpoint stalled at t = " << (t * 1e6) << " us. Stopping sweep gracefully.\n";
+                                    break;
+                                }
+                            } else {
+                                dt = std::max(dt * 0.5, pulseOptions.minDt);
+                                netlistPtr->getStateV() = backupState;
+                                netlistPtr->inspectComponents([](Component& comp, MnaIndex extraIdx) {
+                                    (void)extraIdx; comp.restoreCheckpoint();
+                                });
+                                continue;
+                            }
                         }
                         netlistPtr->getMidpointV() = netlistPtr->getStateV();
                         
                         // PHASE 2 (BDF2 Composite Step)
                         ctx.time = t + dt; ctx.dt = dt; ctx.orderStep = 2;
                         if (!netlistPtr->runNewtonRaphson(ctx, pulseOptions.maxIterations, pulseOptions.relTol, pulseOptions.absTol)) {
-                            dt = std::max(dt * 0.5, pulseOptions.minDt);
-                            netlistPtr->getStateV() = backupState;
-                            netlistPtr->inspectComponents([](Component& comp, MnaIndex extraIdx) {
-                                (void)extraIdx; comp.restoreCheckpoint();
-                            });
-                            if (dt <= pulseOptions.minDt) throw std::runtime_error("Timestep hit floor boundary inside BDF2 block.");
-                            continue;
+                            if (!netlistPtr->runNewtonRaphson(ctx, 150, pulseOptions.relTol * 10.0, pulseOptions.absTol * 10.0)) {
+                                    std::cerr << "[GUI Solver Warning] BDF2 step stalled at t = " << (t * 1e6) << " us. Stopping sweep gracefully.\n";
+                                    break;
+                                }
+                             else {
+                                dt = std::max(dt * 0.5, pulseOptions.minDt);
+                                netlistPtr->getStateV() = backupState;
+                                netlistPtr->inspectComponents([](Component& comp, MnaIndex extraIdx) {
+                                    (void)extraIdx; comp.restoreCheckpoint();
+                                });
+                                continue;
+                            }
                         }
                         
                         double error = netlistPtr->estimateLocalTruncationError(dt, gamma, pulseOptions.relTol, pulseOptions.absTol);
@@ -720,7 +738,7 @@ void FreyaLabVisualizer::executeActiveSimulation() {
                             });
                             continue;
                         }
-                        
+         
                         const auto& state = netlistPtr->getCurrentState();
                         plotTimeSteps.push_back((t + dt) * 1e6);
                         plotInputWaveform.push_back(getSafeVoltage(state, inputNode));
@@ -767,11 +785,10 @@ void FreyaLabVisualizer::executeActiveSimulation() {
         double logStart = std::log10(startFreq); double logStop = std::log10(stopFreq);
         double logStep = (pointsCount > 1) ? (logStop - logStart) / (pointsCount - 1) : 0.0;
 
-        // ✅ FIXED (Uses MnaIndex::fromNetNode):
-	MnaIndex outMna = MnaIndex::fromNetNode(outputNode);
-	MnaIndex inMna  = MnaIndex::fromNetNode(inputNode);
-	int outMnaIdx = outMna.isValid() ? outMna.idx : -1;
-	int inMnaIdx  = inMna.isValid()  ? inMna.idx  : -1;
+        MnaIndex outMna = MnaIndex::fromNetNode(outputNode);
+        MnaIndex inMna  = MnaIndex::fromNetNode(inputNode);
+        int outMnaIdx = outMna.isValid() ? outMna.idx : -1;
+        int inMnaIdx  = inMna.isValid()  ? inMna.idx  : -1;
 
         MnaIndex sourceExtraRowIdx{};
         netlistPtr->inspectComponents([&sourceExtraRowIdx](Component& comp, MnaIndex extraIdx) {
@@ -780,6 +797,7 @@ void FreyaLabVisualizer::executeActiveSimulation() {
             }
         });
 
+        // 1. Frequency Sweep for Bode & Nyquist (10 Hz to 100 MHz)
         for (int i = 0; i < pointsCount; ++i) {
             double freq = std::pow(10.0, logStart + i * logStep);
             double omega = 2.0 * M_PI * freq;
@@ -800,41 +818,92 @@ void FreyaLabVisualizer::executeActiveSimulation() {
                     std::vector<std::complex<double>> X_complex = CircuitMath::luSolveComplex(L_complex, U_complex, P_complex, B_complex);
                     std::complex<double> vOut_phasor(0.0, 0.0);
                     std::complex<double> vIn_phasor(1.0, 0.0);
-                    // Save exact MNA complex solution vector (e.g., at mid-sweep frequency i == pointsCount / 2)
-		    if (i == pointsCount / 2) {
-			g_latestAcNodePhasors = X_complex;
-		    }
-                    if (outMnaIdx >= 0 && static_cast<size_t>(outMnaIdx) < X_complex.size())   vOut_phasor = X_complex[outMnaIdx];
-                    if (inMnaIdx >= 0 && static_cast<size_t>(inMnaIdx) < X_complex.size())     vIn_phasor = X_complex[inMnaIdx];
 
-                    double magnitude = std::abs(vOut_phasor);
+                    if (outMnaIdx >= 0 && static_cast<size_t>(outMnaIdx) < X_complex.size()) vOut_phasor = X_complex[outMnaIdx];
+                    if (inMnaIdx >= 0 && static_cast<size_t>(inMnaIdx) < X_complex.size())   vIn_phasor = X_complex[inMnaIdx];
+
+                    if (std::abs(vIn_phasor) < 1e-20) vIn_phasor = std::complex<double>(1e-20, 0.0);
+                    std::complex<double> hTransfer = vOut_phasor / vIn_phasor;
+
+                    double magnitude = std::abs(hTransfer);
                     double magnitudeDb = 20.0 * std::log10(std::max(magnitude, 1e-12));
                     
                     plotFrequencies.push_back(std::log10(freq));
                     plotBodeMagnitudeDb.push_back(magnitudeDb);
-                    
-                    if (std::abs(vIn_phasor) < 1e-20) vIn_phasor = std::complex<double>(1e-20, 0.0);
-                    std::complex<double> hTransfer = vOut_phasor / vIn_phasor;
                     plotNyquistReal.push_back(hTransfer.real());
                     plotNyquistImag.push_back(hTransfer.imag());
-
-                    if (i == pointsCount - 1 && sourceExtraRowIdx.isValid() && static_cast<size_t>(sourceExtraRowIdx.idx) < X_complex.size()) {
-                        double vMag = static_cast<double>(stimAcMag);
-                        double vPhase = static_cast<double>(stimAcPhase) * M_PI / 180.0;
-                        std::complex<double> vSourcePhasor(vMag * std::cos(vPhase), vMag * std::sin(vPhase));
-                        std::complex<double> iSourcePhasor = -X_complex[sourceExtraRowIdx.idx];
-                        std::complex<double> complexPowerS = vSourcePhasor * std::conj(iSourcePhasor);
-                        
-                        plotActivePowerP = complexPowerS.real();
-                        plotReactivePowerQ = complexPowerS.imag();
-                        plotApparentPowerS = std::abs(complexPowerS);
-                        plotPowerFactor = (plotApparentPowerS > 1e-12) ? plotActivePowerP / plotApparentPowerS : 1.0;
-                    }
                 }
             } catch (...) { continue; }
         }
-    }
-}
+
+        // 2. Evaluate exact MNA phasors, power, and Tab 2 waveforms at the user-selected AC Test Frequency
+        double testFreq = std::max(1.0, static_cast<double>(g_acTestFrequencyHz));
+        double testOmega = 2.0 * M_PI * testFreq;
+
+        A_complex.zero();
+        std::fill(B_complex.begin(), B_complex.end(), std::complex<double>(0.0, 0.0));
+        P_complex.clear();
+
+        netlistPtr->inspectComponents([&A_complex, &B_complex, testOmega, &dcState](Component& comp, MnaIndex extraIdx) {
+            (void)extraIdx;
+            comp.stampAC(A_complex, B_complex, testOmega, dcState);
+        });
+
+        for (int r = 0; r < systemSize; ++r) {
+            A_complex.addValue(r, r, std::complex<double>(1e-20, 0.0));
+        }
+
+        try {
+            if (CircuitMath::luFactorizeComplex(A_complex, L_complex, U_complex, P_complex)) {
+                std::vector<std::complex<double>> X_test = CircuitMath::luSolveComplex(L_complex, U_complex, P_complex, B_complex);
+                g_latestAcNodePhasors = X_test;
+
+                // Update Complex Power (P, Q, S, PF) at g_acTestFrequencyHz
+                if (sourceExtraRowIdx.isValid() && static_cast<size_t>(sourceExtraRowIdx.idx) < X_test.size()) {
+                    double vMag = static_cast<double>(stimAcMag);
+                    double vPhase = static_cast<double>(stimAcPhase) * M_PI / 180.0;
+                    std::complex<double> vSourcePhasor(vMag * std::cos(vPhase), vMag * std::sin(vPhase));
+                    std::complex<double> iSourcePhasor = -X_test[sourceExtraRowIdx.idx];
+                    std::complex<double> complexPowerS = vSourcePhasor * std::conj(iSourcePhasor);
+
+                    plotActivePowerP = complexPowerS.real();
+                    plotReactivePowerQ = complexPowerS.imag();
+                    plotApparentPowerS = std::abs(complexPowerS);
+                    plotPowerFactor = (plotApparentPowerS > 1e-12) ? plotActivePowerP / plotApparentPowerS : 1.0;
+                }
+
+                // Populate steady-state AC time-domain waveforms for Tab 2
+                double periodSec = 1.0 / testFreq;
+                double totalDurationSec = 3.0 * periodSec; // 3 full cycles
+                int numTimeSamples = 300;
+
+                std::complex<double> vInPhasor(static_cast<double>(stimAcMag), 0.0);
+                std::complex<double> vOutPhasor(0.0, 0.0);
+
+                if (inMnaIdx >= 0 && static_cast<size_t>(inMnaIdx) < X_test.size()) {
+                    vInPhasor = X_test[inMnaIdx];
+                }
+                if (outMnaIdx >= 0 && static_cast<size_t>(outMnaIdx) < X_test.size()) {
+                    vOutPhasor = X_test[outMnaIdx];
+                }
+
+                double inMag = std::abs(vInPhasor);
+                double inPhase = std::arg(vInPhasor);
+                double outMag = std::abs(vOutPhasor);
+                double outPhase = std::arg(vOutPhasor);
+
+                for (int k = 0; k <= numTimeSamples; ++k) {
+                    double tSec = (totalDurationSec * k) / numTimeSamples;
+                    double omegaT = 2.0 * M_PI * testFreq * tSec;
+
+                    plotTimeSteps.push_back(tSec * 1e6); // Microseconds (us)
+                    plotInputWaveform.push_back(inMag * std::sin(omegaT + inPhase));
+                    plotOutputWaveform.push_back(outMag * std::sin(omegaT + outPhase));
+                }
+            }
+        } catch (...) {}
+    } // <--- End of "else if (analysisTypeActive == 2)"
+} // <--- End of "FreyaLabVisualizer::executeActiveSimulation()"
 
 // ============================================================================
 // MAIN REVOLUTIONARY GUI GRAPHICAL INTEGRATION WORKSPACE LOOP
@@ -1136,8 +1205,18 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
         } else if (activeStimulus == StimulusType::PULSE_SQUARE) {
             if (ImGui::DragFloat("V_Low (V)", &stimPulseLow, 0.1f, -100.0f, 100.0f, "%.2f V")) paramChanged = true;
             if (ImGui::DragFloat("V_High (V)", &stimPulseHigh, 0.1f, -100.0f, 100.0f, "%.2f V")) paramChanged = true;
-            if (ImGui::DragFloat("Pulse Width (us)", &stimPulseWidth, 0.1f, 0.001f, 1000.0f, "%.3f us")) paramChanged = true;
-            if (ImGui::DragFloat("Period (us)", &stimPulsePeriod, 0.1f, 0.002f, 2000.0f, "%.3f us")) paramChanged = true;
+            float maxAllowedWidth = std::max(0.001f, stimPulsePeriod - 0.001f);
+	    if (ImGui::DragFloat("Pulse Width (us)", &stimPulseWidth, 0.1f, 0.001f, maxAllowedWidth, "%.3f us")) {
+		paramChanged = true;
+	    }
+	    if (ImGui::DragFloat("Period (us)", &stimPulsePeriod, 0.1f, 0.002f, 2000.0f, "%.3f us")) {
+	    // Jika Period diperkecil hingga menyentuh/di bawah Pulse Width, sesuaikan Pulse Width otomatis
+ 	       if (stimPulseWidth >= stimPulsePeriod) {
+	           stimPulseWidth = std::max(0.001f, stimPulsePeriod * 0.5f);
+	        }
+	        paramChanged = true;
+	    }
+
         }
 
         if (paramChanged) {
@@ -1179,25 +1258,49 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
             const auto& vc = pair.second;
             float cx = vc.posX + blockW * 0.5f; 
             float cy = vc.posY + blockH * 0.5f;
-            float p1x_local = -blockW * 0.5f; 
-            float p2x_local =  blockW * 0.5f;
-            float rad = vc.rotationAngle * (float)M_PI / 180.0f;
+            float rad = vc.rotationAngle * static_cast<float>(M_PI) / 180.0f;
             float cosA = std::cos(rad); 
             float sinA = std::sin(rad);
 
-            float pin1_modelX = cx + (p1x_local * cosA); 
-            float pin1_modelY = cy + (p1x_local * sinA);
-            float pin2_modelX = cx + (p2x_local * cosA); 
-            float pin2_modelY = cy + (p2x_local * sinA);
+            auto toScreenPin = [&](float lx, float ly) -> std::pair<float, float> {
+                float worldX = cx + (lx * cosA - ly * sinA);
+                float worldY = cy + (lx * sinA + ly * cosA);
+                return {
+                    (worldX * zoomLevel) + scrollOffsetX,
+                    (worldY * zoomLevel) + scrollOffsetY
+                };
+            };
 
-            // Removed "- hudWindowOffsetX" here as well
-            float p1x = (pin1_modelX * zoomLevel) + scrollOffsetX; 
-            float p1y = (pin1_modelY * zoomLevel) + scrollOffsetY;
-            float p2x = (pin2_modelX * zoomLevel) + scrollOffsetX; 
-            float p2y = (pin2_modelY * zoomLevel) + scrollOffsetY;
+            bool isThreeTerm = (
+                vc.typeStr == "MOSFET" ||
+                vc.typeStr == "FinFET" ||
+                vc.typeStr == "GAAFET" ||
+                vc.typeStr == "RibbonFET" ||
+                vc.typeStr == "BJT"
+            );
 
-            if (vc.connectedNodes.size() >= 1) rotatedNodePositions[vc.connectedNodes[0]].push_back({p1x, p1y});
-            if (vc.connectedNodes.size() >= 2) rotatedNodePositions[vc.connectedNodes[1]].push_back({p2x, p2y});
+            if (isThreeTerm) {
+                // Pin 0: Gate / Base (-60, 0)
+                if (vc.connectedNodes.size() >= 1) {
+                    rotatedNodePositions[vc.connectedNodes[0]].push_back(toScreenPin(-60.0f, 0.0f));
+                }
+                // Pin 1: Drain / Collector (25, -24)
+                if (vc.connectedNodes.size() >= 2) {
+                    rotatedNodePositions[vc.connectedNodes[1]].push_back(toScreenPin(25.0f, -24.0f));
+                }
+                // Pin 2: Source / Emitter (25, 24)
+                if (vc.connectedNodes.size() >= 3) {
+                    rotatedNodePositions[vc.connectedNodes[2]].push_back(toScreenPin(25.0f, 24.0f));
+                }
+            } else {
+                // 2-Node Devices: Pin 0 Left (-60, 0), Pin 1 Right (60, 0)
+                if (vc.connectedNodes.size() >= 1) {
+                    rotatedNodePositions[vc.connectedNodes[0]].push_back(toScreenPin(-60.0f, 0.0f));
+                }
+                if (vc.connectedNodes.size() >= 2) {
+                    rotatedNodePositions[vc.connectedNodes[1]].push_back(toScreenPin(60.0f, 0.0f));
+                }
+            }
         }
 
         for (const auto& nodePair : rotatedNodePositions) {
@@ -1398,18 +1501,18 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
                         ImGui::TableNextColumn();
                         std::string typeStr;
                         switch (comp.getType()) {
-                            case ComponentType::RESISTOR:       typeStr = "Resistor"; break;
-                            case ComponentType::DIODE:          typeStr = "Diode"; break;
-                            case ComponentType::CAPACITOR:      typeStr = "Capacitor"; break;
-                            case ComponentType::INDUCTOR:       typeStr = "Inductor"; break;
-                            case ComponentType::MOSFET:         typeStr = "MOSFET"; break;
-                            case ComponentType::FINFET:
-                            case ComponentType::RIBBONFET:
-                            case ComponentType::GAA_FET:        typeStr = "FinFET"; break;
-                            case ComponentType::BJT:            typeStr = "BJT"; break;
-                            case ComponentType::VOLTAGE_SOURCE: typeStr = "V-Source"; break;
-                            case ComponentType::DIGITAL_IC:     typeStr = "Logic Gate"; break;
-                            default:                            typeStr = "Primitive"; break;
+                            case ComponentType::RESISTOR:			typeStr = "Resistor"; break;
+                            case ComponentType::DIODE:				typeStr = "Diode"; break;
+                            case ComponentType::CAPACITOR:			typeStr = "Capacitor"; break;
+                            case ComponentType::INDUCTOR:			typeStr = "Inductor"; break;
+                            case ComponentType::MOSFET: 			typeStr = "MOSFET"; break;
+                            case ComponentType::FINFET:				typeStr = "FinFET"; break;
+                	    case ComponentType::RIBBONFET:			typeStr = "RibbonFET"; break;
+                            case ComponentType::GAA_FET:  			typeStr = "GAAFET"; break;
+                            case ComponentType::BJT:  				typeStr = "BJT"; break;
+                            case ComponentType::VOLTAGE_SOURCE: 	typeStr = "V-Source"; break;
+                            case ComponentType::DIGITAL_IC: 			typeStr = "Logic Gate"; break;
+                            default:  								typeStr = "Primitive"; break;
                         }
                         ImGui::Text("%s", typeStr.c_str()); ImGui::TableNextColumn();
 
@@ -1447,7 +1550,7 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
             if (ImGui::BeginTabItem("AC Transient Waveform")) {
                 if (ImPlot::BeginPlot("AC Time Domain Waveforms", ImVec2(-1.0f, -1.0f))) {
                     ImPlot::SetupAxes("Time (us)", "Potential Amplitude (V)");
-                    if (!plotTimeSteps.empty()) {
+                    if (!plotTimeSteps.empty() && analysisTypeActive == 2) {
                         ImPlot::PlotLine("Node Input Trace", plotTimeSteps.data(), plotInputWaveform.data(), static_cast<int>(plotTimeSteps.size()));
                         ImPlot::PlotLine("Node Output Trace", plotTimeSteps.data(), plotOutputWaveform.data(), static_cast<int>(plotTimeSteps.size()));
                     }
@@ -1649,7 +1752,7 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
                     ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Switch to 'Small-Signal AC Frequency Bode' mode to display live MNA node phasors.");
                 } else {
                     ImGui::Text("Solved Nodes: %zu  |  Evaluated at Mid-Sweep Frequency (%.1f Hz)",
-                                activePhasors.size(), std::pow(10.0, plotFrequencies[plotFrequencies.size() / 2]));
+                                activePhasors.size(), g_acTestFrequencyHz);
                 }
 
                 ImGui::EndTabItem();
@@ -1863,7 +1966,7 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
 			if (analysisTypeActive != 2 || !sourceDrop.isSource) {
 			ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Switch to 'Small-Signal AC Frequency Bode' mode to compute live KVL component drops.");
 			} else {
-			std::complex sumPassive(0.0, 0.0);
+			std::complex<double> sumPassive(0.0, 0.0);
 			for (const auto& d : passiveDrops) sumPassive += d.phasor;
 			double kvlResidual = std::abs(sourceDrop.phasor - sumPassive);
 			ImGui::Text("Source |V| = %.3f V  |  Passive Components: %zu  |  KVL Loop Residual |V_src - Sum(V_drop)| = %.2e V",
@@ -2005,8 +2108,10 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
             if (ImGui::BeginTabItem("Nyquist Stability")) {
                 bool unstableEncirclement = false;
                 bool hasNyquistData = !plotNyquistReal.empty();
+		// Sisakan ruang 28 px di bawah untuk 1 baris status kestabilan
+		float nyquistPlotHeight = std::max(120.0f, ImGui::GetContentRegionAvail().y - 28.0f);
 
-                if (ImPlot::BeginPlot("##nyquist_plot", ImVec2(-1.0f, -1.0f), ImPlotFlags_Equal)) {
+                if (ImPlot::BeginPlot("##nyquist_plot", ImVec2(-1.0f, nyquistPlotHeight), ImPlotFlags_Equal)) {
                     ImPlot::SetupAxes("Real Component [Re(H)]", "Imaginary Component [Im(H)]");
                     double critX[] = { -1.0 };
                     double critY[] = { 0.0 };
@@ -2045,7 +2150,11 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
                 double rmsQ = plotReactivePowerQ * 0.5;
                 double apparentPowerS = std::sqrt(rmsP * rmsP + rmsQ * rmsQ);
 
-                if (ImPlot::BeginPlot("##pqs_power_plot", ImVec2(-1.0f, -1.0f), ImPlotFlags_Equal)) {
+		// Sisakan ruang 85 px di bawah untuk 4 baris teks metrik daya
+		float powerPlotHeight = std::max(120.0f, ImGui::GetContentRegionAvail().y - 85.0f);
+
+
+                if (ImPlot::BeginPlot("##pqs_power_plot", ImVec2(-1.0f, powerPlotHeight), ImPlotFlags_Equal)) {
                     ImPlot::SetupAxes("Real Active Power P (Watts)", "Reactive Power Q (VAR)");
                     double pX[] = { 0.0, rmsP };
                     double pY[] = { 0.0, 0.0 };
@@ -2087,17 +2196,24 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
                     double vMag = static_cast<double>(stimAcMag);
                     double vPhase = static_cast<double>(stimAcPhase) * M_PI / 180.0;
                     std::complex<double> vSourcePhasor(vMag * std::cos(vPhase), vMag * std::sin(vPhase));
-                    std::complex<double> iSourcePhasor(plotActivePowerP / vMag, -plotReactivePowerQ / vMag);
+                    std::complex<double> complexPowerS(plotActivePowerP, plotReactivePowerQ); // 2. Daya kompleks S = P + jQ
+		    // 3. Arus sumber eksak dari S = V * I*  =>  I = (S / V)*
+		    std::complex<double> iSourcePhasor = (vMag > 1e-12)
+			    ? std::conj(complexPowerS / vSourcePhasor)
+			    : std::complex<double>(0.0, 0.0);
 
-                    std::complex<double> inputImpedanceZ = (std::abs(iSourcePhasor) > 1e-12) ? vSourcePhasor / iSourcePhasor : std::complex<double>(0.0, 0.0);
-
+                    // 4. Impedansi input Z = V / I (sudut fasa sumber otomatis saling meniadakan)
+  		    std::complex<double> inputImpedanceZ = (std::abs(iSourcePhasor) > 1e-12)
+			    ? (vSourcePhasor / iSourcePhasor)
+			    : std::complex<double>(0.0, 0.0);
                     inputR = inputImpedanceZ.real();
                     inputX = inputImpedanceZ.imag();
                     magnitudeZ = std::abs(inputImpedanceZ);
                     phaseRad = std::arg(inputImpedanceZ);
                 }
+ 	        float plotHeight = std::max(120.0f, ImGui::GetContentRegionAvail().y - 85.0f);
 
-                if (ImPlot::BeginPlot("##holistic_z_plane_plot", ImVec2(-1.0f, -1.0f), ImPlotFlags_Equal)) {
+                if (ImPlot::BeginPlot("##holistic_z_plane_plot", ImVec2(-1.0f, plotHeight), ImPlotFlags_Equal)) {
                     ImPlot::SetupAxes("Resistance R (Ohms)", "Reactance X (Ohms)");
                     double zX[] = { 0.0, inputR };
                     double zY[] = { 0.0, inputX };
@@ -2137,6 +2253,7 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
     // ============================================================================
     // APPLICATION TERMINATION RECOVERY AND RESOURCE CLEANUP PROTOCOLS
     // ============================================================================
+    glfwMakeContextCurrent(window);
     visualComponents.clear();
     plotTimeSteps.clear();
     plotInputWaveform.clear();
@@ -2145,17 +2262,38 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
     plotBodeMagnitudeDb.clear();
     plotNyquistReal.clear();
     plotNyquistImag.clear();
+    g_latestAcNodePhasors.clear();
+    g_latestAcNodePhasors.shrink_to_fit();
 
-    glDeleteBuffers(1, &globalVBO);
-    glDeleteVertexArrays(1, &globalVAO);
-    glDeleteProgram(shaderProgram);
+    // 1. Delete OpenGL resources while the OpenGL context is still active
+    if (globalVBO != 0) {
+        glDeleteBuffers(1, &globalVBO);
+        globalVBO = 0;
+    }
+    if (globalVAO != 0) {
+        glDeleteVertexArrays(1, &globalVAO);
+        globalVAO = 0;
+    }
+    if (shaderProgram != 0) {
+        glDeleteProgram(shaderProgram);
+        shaderProgram = 0;
+    }
 
+    // 2. Shut down renderer & platform backends first
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
+
+    // 3. Destroy ImPlot context, detach it, then destroy ImGui context
     ImPlot::DestroyContext();
+    ImPlot::SetCurrentContext(nullptr);
     ImGui::DestroyContext();
+    ImGui::SetCurrentContext(nullptr);
 
+    // 4. Destroy the window and terminate GLFW
     glfwDestroyWindow(window);
+    window = nullptr;
     glfwTerminate();
-}
 
+    // 5. Remove the temporary netlist file from disk to keep the workspace clean
+    std::remove("tmp_gui_netlist.ckt");
+}
