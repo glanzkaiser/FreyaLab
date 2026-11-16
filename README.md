@@ -1,13 +1,12 @@
 
 # FreyaLab: High-Performance Mixed-Signal SPICE Simulation Core
 
-[![License: Virgin Mary]
 [![Language: C++17](https://shields.io)](https://cppreference.com)
 [![Framework: Modern EDA](https://shields.io)]()
 
 ## 📝 Abstract
 
-**FreyaLab** is an open-source, high-performance mixed-signal SPICE circuit simulation engine and interactive schematic computer-aided design (CAD) platform built from the ground up in modern C++17. Designed to bridge the historical divide between abstract netlist validation and bare-metal systems execution, FreyaLab implements a real-time **Left-Looking Gilbert-Peierls sparse LU factorization matrix core** coupled with an **adaptive second-order TR-BDF2 composite time-integration integration solver**. 
+**FreyaLab** is an open-source, bare-metal **mixed-signal SPICE circuit simulator**, **interactive OpenGL schematic CAD environment**, and **electrical engineering textbook** written from scratch in modern C++17, unifying analog semiconductor physics and behavioral digital logic within a single Modified Nodal Analysis (MNA) matrix. Designed to bridge the historical divide between abstract netlist validation and bare-metal systems execution, FreyaLab implements a real-time **Left-Looking Gilbert-Peierls sparse LU factorization matrix core** coupled with an **adaptive second-order TR-BDF2 composite time-integration integration solver**. 
 
 By mapping non-linear semiconductor analog device models (Junction Diodes, MOSFETs, VBIC BJTs) and high-level behavioral digital logic elements into a single, unified Modified Nodal Analysis (MNA) matrix space, FreyaLab achieves zero-latency mixed-signal co-simulation without the "ping-pong" latencies or interface synchronization bugs common to multi-engine architectures. 
 
@@ -15,9 +14,21 @@ The software framework features a bi-directional visual-to-text compilation loop
 
 ---
 
-## 🔬 Core Solver Architecture & Numerical Pipeline
+## ✨ Key Capabilities
 
-FreyaLab rejects dense matrix computation methods ($\mathcal{O}(n^3)$ scaling) in favor of deep structural sparse linear algebra primitives:
+* **Unified Mixed-Signal MNA Solver:** Stamps analog devices and behavioral logic gates (`NOT`, `AND`, `OR`, `XOR`, `NAND`, `NOR`, `XNOR`) into a single MNA matrix without external solver wrappers (`ngspice`, `Xyce`).
+* **Left-Looking Gilbert-Peierls Sparse LU Core:** Custom Compressed Sparse Row (CSR) engine with topological search (`gpDfs`) and partial pivoting for real transient and complex phasor systems.
+* **Adaptive TR-BDF2 Composite Time Integration:** L-stable second-order integration combining Trapezoidal and BDF2 substeps with Local Truncation Error (LTE) control and picosecond-level state rollbacks.
+* **Sub-14nm FinFET & GAA-FET Support (OSDI v0.4):** Dynamic loading of OpenVAF-compiled Verilog-A models via OSDI v0.4 for UC Berkeley **BSIM-CMG 112.1.0** with analytical multi-gate fallbacks.
+* **Bi-Directional OpenGL 3.3 CAD & 11-Tab Analysis Suite:** Drag-and-drop grid-snapped schematic editor synchronized with text netlists, featuring 11 real-time analysis views including DC Operating Point, AC Bode, TR-BDF2 transients, rotating Node Phasors, KVL chains, Z-Plane impedances, Nyquist stability, Power Quadrants, and a Digital Logic Analyzer.
+
+
+## 🔬 Numerical Architecture
+
+* **Left-Looking Sparse LU Factorization:** Solves column-by-column over active CSR arrays using topological reachability ($\mathbf{L}_k \mathbf{u}_k = \mathbf{a}_k$).
+* **Adaptive TR-BDF2 Time Integration & Rollback:** Splits each step $\Delta t$ into a Trapezoidal midpoint ($\gamma = 2 - \sqrt{2}$) and BDF2 stage, rolling back internal states via checkpointing if LTE thresholds or Newton-Raphson iterations fail.
+* **PN-Junction Voltage Limiting (`pnjlim`):** Damps exponential semiconductor junctions and logic transitions inside the Newton-Raphson loop using logarithmic voltage limiting.
+
 
 ### 1. Left-Looking Sparse LU Core
 Rather than performing complete matrix re-ordering operations on simple schematic canvas updates, symbolic and numeric factorizations are solved column-by-column using column-oriented depth-first search (`gpDfs`) and topological sorting over the active Compressed Sparse Row (CSR) arrays:
@@ -72,4 +83,13 @@ Mixed-signal example:
 <img src="https://github.com/glanzkaiser/FreyaLab/blob/main/images/FreyaLabMixedSignal.gif" width="60%">
 
 
-#### Created on Blue Moon May 31st, 2026
+## 🗺️ Roadmap
+
+* [x] Left-looking Gilbert-Peierls sparse LU solver (real & complex CSR)
+* [x] Adaptive TR-BDF2 transient solver with LTE checkpoint rollback
+* [x] BSIM-CMG 112.1.0 multi-gate FinFET / GAA-FET integration via OSDI v0.4
+* [x] OpenGL 3.3 interactive schematic CAD & 11-tab ImPlot engineering dashboard
+* [ ] **BSIM-CMG 112.1.0 Regression Suite:** Automated validation against `ngspice`
+* [ ] **KLU Sparse Solver Backend:** BTF decomposition + AMD ordering for 10,000+ node netlists
+* [ ] **Memristor & Neuromorphic Crossbar Simulation:** Nonlinear VTEAM/Yakopcic memristor models
+
