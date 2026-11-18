@@ -62,7 +62,7 @@ FreyaLab has been benchmarked extensively against classic dense simulation frame
 
 ## BSIM-CMG 112.1.0 Automated Regression Suite (FreyaLab vs. `ngspice-43`)
 
-To guarantee SPICE-grade accuracy on sub-14nm multi-gate transistors, FreyaLab includes an automated Python regression suite (`run_bsimcmg_regression.py`) that loads the exact same OpenVAF-compiled `bsimcmg.osdi` binary across both **FreyaLab** and **`ngspice-43`** and verifies DC, AC, and TR-BDF2 transient telemetry:
+To guarantee SPICE-grade accuracy on sub-14nm multi-gate transistors, this is the regression suite that loads the exact same OpenVAF-compiled `bsimcmg.osdi` binary across both **FreyaLab** and **`ngspice-43`** and verifies DC, AC, and TR-BDF2 transient telemetry:
 
 | Regression Test | Analysis Mode & Device Geometry | Key Telemetry Metric | `ngspice-43` (OSDI) | **FreyaLab** (OSDI + TR-BDF2) | RMSE / Deviation | Status |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: |
