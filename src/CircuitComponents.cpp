@@ -1,4 +1,3 @@
-
 #include "freyalab/CircuitComponents.h"
 #include "freyalab/math.h"
 #include "freyalab/LogicGates.h"
@@ -130,14 +129,26 @@ void Diode::stamp(MnaMatrixContext& ctx) {
         vold = getSafeVoltage(ctx.historicStepV, n1) - getSafeVoltage(ctx.historicStepV, n2);
     }
 
-    double safeIs = std::max(Is, 1e-20);
-    double vt = N * V_THERMAL_300K;
+    // 2. Temperature scaling for thermal voltage (kT/q) and saturation current Is(T)
+    constexpr double T0 = 300.15;       // Nominal 27°C in Kelvin
+    constexpr double EG_SI = 1.11;      // Silicon bandgap energy (eV)
+    constexpr double XTI = 3.0;         // Saturation current temperature exponent
+
+    double vtBase = (ctx.thermalVoltage > 1e-6) ? ctx.thermalVoltage : V_THERMAL_300K;
+    double T = ctx.ambientTempCelsius + 273.15;
+    double tempRatio = std::max(T / T0, 0.1);
+
+    double isTemp = Is * std::pow(tempRatio, XTI / N) *
+                    std::exp((EG_SI / (N * V_THERMAL_300K)) - (EG_SI / (N * vtBase)));
+
+    double safeIs = std::max(isTemp, 1e-20);
+    double vt = N * vtBase;
     double vcrit = vt * std::log(vt / (std::sqrt(2.0) * safeIs));
 
-    // 2. Compute limited voltage drop for exponential overflow safety
+    // 3. Compute limited voltage drop for exponential overflow safety
     double vd_lim = CircuitMath::pnjlim(vd_true, vold, vt, vcrit);
 
-    // 3. Compute Shockley equations using the safely limited voltage drop
+    // 4. Compute Shockley equations using the safely limited voltage drop
     double expTerm = std::exp(std::min(vd_lim / vt, 40.0));
     double id = safeIs * (expTerm - 1.0);
     double gd = (safeIs / vt) * expTerm;
@@ -145,14 +156,14 @@ void Diode::stamp(MnaMatrixContext& ctx) {
     constexpr double gmin = 1e-12;
     gd += gmin;
 
-    // 4. Formulate Norton equivalent current anchored at vd_lim
+    // 5. Formulate Norton equivalent current anchored at vd_lim
     double ieq = id - gd * vd_lim;
 
-    // 5. Translate 1-based NetNodes to 0-based MnaIndices (trapping Ground automatically)
+    // 6. Translate 1-based NetNodes to 0-based MnaIndices (trapping Ground automatically)
     MnaIndex m1 = MnaIndex::fromNetNode(n1);
     MnaIndex m2 = MnaIndex::fromNetNode(n2);
 
-    // 6. Conductance Matrix G Stamping
+    // 7. Conductance Matrix G Stamping
     if (m1.isValid()) ctx.G.addValue(m1.idx, m1.idx,  gd);
     if (m2.isValid()) ctx.G.addValue(m2.idx, m2.idx,  gd);
     if (m1.isValid() && m2.isValid()) {
@@ -160,7 +171,7 @@ void Diode::stamp(MnaMatrixContext& ctx) {
         ctx.G.addValue(m2.idx, m1.idx, -gd);
     }
 
-    // 7. Bounds-Checked Source Vector B Stamping
+    // 8. Bounds-Checked Source Vector B Stamping
     addSafeRhs(ctx.B, m1, -ieq);
     addSafeRhs(ctx.B, m2,  ieq);
 }
@@ -301,16 +312,16 @@ void Capacitor::stamp(MnaMatrixContext& ctx) {
 
     // 2. Transient Integration Companion Model Evaluation with bounds-checked NetNode lookups
     if (ctx.orderStep == 1) {
-        // TR Stage Companion Model: geq = 2C / (gamma * dt)
-        geq = (2.0 * capacitance) / (gamma * ctx.dt);
+    	// TR Stage Companion Model: geq = 2C / (gamma * dt)
+    	geq = (2.0 * capacitance) / (gamma * ctx.dt);
 
-        double v_n = 0.0;
-        if (ctx.historicStepV) {
-            v_n = getSafeVoltage(ctx.historicStepV, n1) - getSafeVoltage(ctx.historicStepV, n2);
-        }
-        // Norton companion current source tracking equation
-        ieq = -geq * v_n - (q_hist_n / (gamma * ctx.dt * 0.5));
-
+    	double v_n = 0.0;
+    	if (ctx.historicStepV) {
+		v_n = getSafeVoltage(ctx.historicStepV, n1) - getSafeVoltage(ctx.historicStepV, n2);
+	    }
+	// True Trapezoidal Norton companion source: ieq = -geq * v_n - i_n
+	// (Here q_hist_n holds the previous step capacitor current i_n)
+	ieq = -geq * v_n - q_hist_n;
     } else if (ctx.orderStep == 2) {
         // BDF2 Composite Stage Companion Model: Variable multi-step spacing coefficients
         double c1 = (2.0 - gamma) / (1.0 - gamma);
@@ -346,17 +357,37 @@ void Capacitor::stamp(MnaMatrixContext& ctx) {
 void Capacitor::updateHistory(const MnaMatrixContext& ctx) {
     if (nodes.size() < 2 || !ctx.currentIterV) return;
 
-    // Safely sample instant node voltages via the bounds-checked NetNode helper
-    double v = getSafeVoltage(ctx.currentIterV, nodes[0]) - getSafeVoltage(ctx.currentIterV, nodes[1]);
+    if (ctx.orderStep == 0) {
+        // At DC operating point, capacitor current is 0
+        q_hist_n = 0.0;
+        q_hist_nc = 0.0;
+        return;
+    }
+
+    const double gamma = 2.0 - std::sqrt(2.0);
+    double v_curr = getSafeVoltage(ctx.currentIterV, nodes[0]) - getSafeVoltage(ctx.currentIterV, nodes[1]);
 
     if (ctx.orderStep == 1) {
-        // Store intermediate TR stage charge integration state point (v_{n+gamma})
-        q_hist_nc = capacitance * v;
+        double v_n = ctx.historicStepV
+            ? (getSafeVoltage(ctx.historicStepV, nodes[0]) - getSafeVoltage(ctx.historicStepV, nodes[1]))
+            : v_curr;
+        double geq = (2.0 * capacitance) / (gamma * ctx.dt);
+        // i_{n+gamma} = geq * (v_{n+gamma} - v_n) - i_n
+        q_hist_nc = geq * (v_curr - v_n) - q_hist_n;
     } else if (ctx.orderStep == 2) {
-        // Commit final full BDF2 time step charge state point (v_{n+1})
-        q_hist_n = capacitance * v;
+        double c1 = (2.0 - gamma) / (1.0 - gamma);
+        double c2 = 1.0 / (gamma * (1.0 - gamma));
+        double v_n = ctx.historicStepV
+            ? (getSafeVoltage(ctx.historicStepV, nodes[0]) - getSafeVoltage(ctx.historicStepV, nodes[1]))
+            : v_curr;
+        double v_nc = ctx.midpointStepV
+            ? (getSafeVoltage(ctx.midpointStepV, nodes[0]) - getSafeVoltage(ctx.midpointStepV, nodes[1]))
+            : v_curr;
+        // i_{n+1} = (C / dt) * (c1 * v_{n+1} - c2 * v_{n+gamma} + (c2 - c1) * v_n)
+        q_hist_n = (capacitance / ctx.dt) * (c1 * v_curr - c2 * v_nc + (c2 - c1) * v_n);
     }
 }
+
 
 void Capacitor::getSparsityPattern(std::vector<std::pair<MnaIndex, MnaIndex>>& patterns, MnaIndex extraIdx) const {
     (void)extraIdx; // Passive two-terminal components do not request extra rows
@@ -385,7 +416,7 @@ double Capacitor::calculateCurrent(const SimulationContext& simCtx, MnaIndex ext
         return 0.0;
     }
 
-    // During pure static DC Operating Point analysis (Order 0), an ideal capacitor acts as an open circuit
+    // During pure static DC Operating Point analysis (Order 0), only the Gmin shunt conducts
     if (simCtx.orderStep == 0 || simCtx.dt <= 0.0) {
         constexpr double gmin = 1e-12;
         return gmin * calculateVoltageDrop(simCtx.state);
@@ -397,29 +428,10 @@ double Capacitor::calculateCurrent(const SimulationContext& simCtx, MnaIndex ext
         return simCtx.state[idx.idx];
     }
 
-    double v_now = calculateVoltageDrop(simCtx.state);
-    double safeCap = (std::abs(capacitance) > 1e-24) ? capacitance : 1e-24;
-
-    // TR-BDF2 Step Fractional Parameter: gamma = 2.0 - sqrt(2.0)
-    const double gamma = 2.0 - std::sqrt(2.0);
-    double geq = 0.0;
-    double ieq = 0.0;
-
-    if (simCtx.orderStep == 1) {
-        // Trapezoidal Integration Substep
-        geq = (2.0 * safeCap) / (gamma * simCtx.dt);
-        double v_n = q_hist_n / safeCap;
-        ieq = -geq * v_n - (q_hist_n / (gamma * simCtx.dt * 0.5));
-    } else if (simCtx.orderStep == 2) {
-        // BDF2 Integration Step Phase
-        double c1 = (2.0 - gamma) / (1.0 - gamma);
-        double c2 = 1.0 / (gamma * (1.0 - gamma));
-        geq = c1 * safeCap / simCtx.dt;
-        ieq = -(c2 * q_hist_nc - (c2 - c1) * q_hist_n) / simCtx.dt;
-    }
-
-    return (geq * v_now) + ieq;
+    // Return the exact TR-BDF2 companion current recorded in updateHistory()
+    return (simCtx.orderStep == 1) ? q_hist_nc : q_hist_n;
 }
+
 
 void Capacitor::stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c,
                         double omega, const std::vector<double>& dcState) {
@@ -518,8 +530,8 @@ void Inductor::stamp(MnaMatrixContext& ctx) {
         if (ctx.historicStepV) {
             v_past = getSafeVoltage(ctx.historicStepV, n1) - getSafeVoltage(ctx.historicStepV, n2);
         }
-        // Thévenin RHS injection: B[idx] = v_n - Req * i_n
-        setSafeRhs(ctx.B, idx, v_past - req * i_hist_n);
+        // Thévenin RHS injection: B[idx] = -v_n - Req * i_n
+        setSafeRhs(ctx.B, idx, -v_past - req * i_hist_n);
 
     } else if (ctx.orderStep == 2) {
         // BDF2 Composite Stage Companion Model: Multi-step time grid integration coefficients
@@ -695,7 +707,17 @@ void Mosfet::stamp(MnaMatrixContext& ctx) {
     vG *= pol;
     vS *= pol;
 
-    // 4. Handle Bidirectional Operating Modes (Symmetric Drain-Source Swapping)
+    // 4. Temperature scaling for mobility beta(T) and threshold voltage vt0(T)
+    constexpr double T0  = 300.15;      // Nominal 27°C in Kelvin
+    constexpr double TCV = -1.5e-3;     // Threshold temperature coefficient (-1.5 mV/K)
+    constexpr double BEX = -1.5;        // Mobility temperature exponent
+
+    double T = ctx.ambientTempCelsius + 273.15;
+    double tempRatio = std::max(T / T0, 0.1);
+    double betaTemp  = beta * std::pow(tempRatio, BEX);
+    double vt0Temp   = std::max(0.05, vt0 + TCV * (T - T0));
+
+    // 5. Handle Bidirectional Operating Modes (Symmetric Drain-Source Swapping)
     double vds = vD - vS;
     if (vds < 0.0) {
         std::swap(nD_working, nS_working);
@@ -705,25 +727,25 @@ void Mosfet::stamp(MnaMatrixContext& ctx) {
 
     // Compute gate overdrive voltage in the normalized working frame
     double vgs = vG - vS;
-    double vov = vgs - vt0;
+    double vov = vgs - vt0Temp;
 
     double ids = 0.0;
     double gm  = 0.0;
     double gds = 1e-12; // Minimum floor conductance for matrix conditioning
 
-    // 5. Piecewise Evaluation of the Shichman-Hodges Square-Law Model
+    // 6. Piecewise Evaluation of the Shichman-Hodges Square-Law Model
     if (vov > 0.0) {
         double lambdaTerm = 1.0 + lambda * vds;
         if (vds < vov) {
             // Linear / Triode Operating Region
-            ids = beta * (vov * vds - 0.5 * vds * vds) * lambdaTerm;
-            gm  = beta * vds * lambdaTerm;
-            gds = beta * (vov - vds) * lambdaTerm + beta * (vov * vds - 0.5 * vds * vds) * lambda;
+            ids = betaTemp * (vov * vds - 0.5 * vds * vds) * lambdaTerm;
+            gm  = betaTemp * vds * lambdaTerm;
+            gds = betaTemp * (vov - vds) * lambdaTerm + betaTemp * (vov * vds - 0.5 * vds * vds) * lambda;
         } else {
             // Saturation / Active Pinch-Off Operating Region
-            ids = 0.5 * beta * vov * vov * lambdaTerm;
-            gm  = beta * vov * lambdaTerm;
-            gds = 0.5 * beta * vov * vov * lambda;
+            ids = 0.5 * betaTemp * vov * vov * lambdaTerm;
+            gm  = betaTemp * vov * lambdaTerm;
+            gds = 0.5 * betaTemp * vov * vov * lambda;
         }
     }
 
@@ -732,12 +754,12 @@ void Mosfet::stamp(MnaMatrixContext& ctx) {
     // Norton equivalent compensation current converted back to physical terminal polarity
     double ieq = pol * (ids - gm * vgs - gds * vds);
 
-    // 6. Translate 1-based NetNodes into 0-based MnaIndices (trapping Ground automatically)
+    // 7. Translate 1-based NetNodes into 0-based MnaIndices (trapping Ground automatically)
     MnaIndex mD = MnaIndex::fromNetNode(nD_working);
     MnaIndex mG = MnaIndex::fromNetNode(nG_working);
     MnaIndex mS = MnaIndex::fromNetNode(nS_working);
 
-    // 7. Multi-Terminal Jacobian Conductance & Bounds-Checked RHS Injection
+    // 8. Multi-Terminal Jacobian Conductance & Bounds-Checked RHS Injection
     if (mD.isValid()) {
         ctx.G.addValue(mD.idx, mD.idx,  gds);
         if (mG.isValid()) ctx.G.addValue(mD.idx, mG.idx,  gm);
@@ -752,6 +774,8 @@ void Mosfet::stamp(MnaMatrixContext& ctx) {
         addSafeRhs(ctx.B, mS, ieq);   // Current entering working Source
     }
 }
+
+
 void Mosfet::stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c,
                      double omega, const std::vector<double>& dcState) {
     (void)B_c; // Nonlinear devices do not load independent phasor source inputs
@@ -943,16 +967,30 @@ void VbicBjtAdvanced::stamp(MnaMatrixContext& ctx) {
         vold_E = getSafeVoltage(ctx.historicStepV, nE);
     }
 
-    // 3. Polarity Isolation Layer
+    // 3. Polarity Isolation Layer & Temperature Scaling (.TEMP)
     double sig = isNpn ? 1.0 : -1.0;
     double vbe = sig * (vB - vE);
     double vbc = sig * (vB - vC);
     double vold_be = sig * (vold_B - vold_E);
     double vold_bc = sig * (vold_B - vold_C);
 
-    double vt = Nf * V_THERMAL_300K;
-    double vtr = Nr * V_THERMAL_300K;
-    double safe_Is = std::max(Is, 1e-20);
+    constexpr double T0    = 300.15;      // Nominal 27°C in Kelvin
+    constexpr double EG_SI = 1.11;        // Silicon bandgap energy (eV)
+    constexpr double XTI   = 3.0;         // Saturation current temperature exponent
+    constexpr double XTB   = 1.5;         // Forward/reverse beta temperature exponent
+
+    double vtBase = (ctx.thermalVoltage > 1e-6) ? ctx.thermalVoltage : V_THERMAL_300K;
+    double T = ctx.ambientTempCelsius + 273.15;
+    double tempRatio = std::max(T / T0, 0.1);
+
+    double isTemp = Is * std::pow(tempRatio, XTI) *
+                    std::exp((EG_SI / V_THERMAL_300K) - (EG_SI / vtBase));
+    double bfTemp = 100.0 * std::pow(tempRatio, XTB);
+    double brTemp = 50.0  * std::pow(tempRatio, XTB);
+
+    double vt = Nf * vtBase;
+    double vtr = Nr * vtBase;
+    double safe_Is = std::max(isTemp, 1e-20);
 
     // 4. SPICE Voltage Limiting Loop
     double vcrit_f = vt * std::log(vt / (std::sqrt(2.0) * safe_Is));
@@ -997,13 +1035,13 @@ void VbicBjtAdvanced::stamp(MnaMatrixContext& ctx) {
 
     constexpr double gmin = 1e-12;
     double ice = itz + gmin * (vbe_lim - vbc_lim);
-    double ibe = (ibf / 100.0) + gmin * vbe_lim; // Static forward beta = 100
-    double ibc = (ibr / 50.0) + gmin * vbc_lim;   // Static reverse beta = 50
+    double ibe = (ibf / bfTemp) + gmin * vbe_lim; // Temperature-scaled forward beta
+    double ibc = (ibr / brTemp) + gmin * vbc_lim; // Temperature-scaled reverse beta
 
     double g_ice_vbe = ditz_dvbe + gmin;
     double g_ice_vbc = ditz_dvbc - gmin;
-    double g_ibe_vbe = (dibf_dvbe / 100.0) + gmin;
-    double g_ibc_vbc = (dibr_dvbc / 50.0) + gmin;
+    double g_ibe_vbe = (dibf_dvbe / bfTemp) + gmin;
+    double g_ibc_vbc = (dibr_dvbc / brTemp) + gmin;
 
     // 6. Absolute Oriented Node Conductance Mapping (KCL Multi-Terminal Jacobian)
     double final_gCC = g_ibc_vbc - g_ice_vbc;
@@ -1053,6 +1091,7 @@ void VbicBjtAdvanced::stamp(MnaMatrixContext& ctx) {
         addSafeRhs(ctx.B, mE, ieq_e);
     }
 }
+
 
 void VbicBjtAdvanced::stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>>& B_c,
                               double omega, const std::vector<double>& dcState) {
@@ -1329,10 +1368,31 @@ void VoltageSource::stamp(MnaMatrixContext& ctx) {
     // Hard allocation for the branch diagonal grid point to secure solver structural integrity
     ctx.G.addValue(idx.idx, idx.idx, 0.0);
 
-    // 3. Bounds-checked absolute assignment to the branch constitutive RHS row:
-    // V_{m1} - V_{m2} = value
-    setSafeRhs(ctx.B, idx, value);
+    // 3. Evaluate instantaneous waveform voltage (DC operating point vs. transient PULSE)
+    double instantV = value;
+    if (isPulse && ctx.orderStep > 0) {
+        if (ctx.time <= pulseTd) {
+            instantV = pulseV1;
+        } else {
+            double tCycle = std::fmod(ctx.time - pulseTd, pulsePer);
+            if (tCycle < pulseTr) {
+                instantV = pulseV1 + (pulseV2 - pulseV1) * (tCycle / pulseTr);
+            } else if (tCycle < pulseTr + pulsePw) {
+                instantV = pulseV2;
+            } else if (tCycle < pulseTr + pulsePw + pulseTf) {
+                double tFall = tCycle - (pulseTr + pulsePw);
+                instantV = pulseV2 + (pulseV1 - pulseV2) * (tFall / pulseTf);
+            } else {
+                instantV = pulseV1;
+            }
+        }
+    }
+
+    // Bounds-checked absolute assignment to the branch constitutive RHS row:
+    // V_{m1} - V_{m2} = instantV
+    setSafeRhs(ctx.B, idx, instantV);
 }
+
 
 void VoltageSource::getSparsityPattern(std::vector<std::pair<MnaIndex, MnaIndex>>& patterns, MnaIndex extraIdx) const {
     if (nodes.size() < 2) return;

@@ -1,9 +1,11 @@
 #include "freyalab/VisualizationPointer.h"
 #include "freyalab/Netlist.h"
+#include "freyalab/KLU.h"
 #include "freyalab/CircuitComponents.h"
 #include "freyalab/DCCircuit.h"
 #include "freyalab/PulseCircuit.h"
 #include "freyalab/ACCircuit.h"
+#include "freyalab/LogicGates.h"
 #include <freyalab/glad/glad.h>
 #include <GLFW/glfw3.h>
 #include "freyalab/imgui/imgui.h"
@@ -36,6 +38,12 @@ static inline void PlotLineStyled(const char* label, const double* xs, const dou
     spec.LineColor = color;
     spec.LineWeight = weight;
     ImPlot::PlotLine(label, xs, ys, count, spec);
+}
+static inline void PlotStairsStyled(const char* label, const double* xs, const double* ys, int count, const ImVec4& color, float weight = 2.5f) {
+    ImPlotSpec spec;
+    spec.LineColor = color;
+    spec.LineWeight = weight;
+    ImPlot::PlotStairs(label, xs, ys, count, spec);
 }
 
 static inline void PlotScatterStyled(const char* label, const double* xs, const double* ys, int count, ImPlotMarker marker, float size, const ImVec4& color) {
@@ -360,6 +368,93 @@ static void drawVisualSchematicGL(
             drawLocalLine( 12.0f,  19.0f,  20.0f,  18.0f, r, g, b, 2.0f);
             drawLocalLine( 16.0f,  12.0f,  20.0f,  18.0f, r, g, b, 2.0f);
         }
+	        // --------------------------------------------------------------------
+        // I2. IEEE LOGIC GATES (NOT, AND, NAND, OR, NOR, XOR, XNOR)
+        // --------------------------------------------------------------------
+        else if (vc.typeStr == "NOT" || vc.typeStr == "AND" || vc.typeStr == "NAND" ||
+                 vc.typeStr == "OR"  || vc.typeStr == "NOR" || vc.typeStr == "XOR"  || vc.typeStr == "XNOR") {
+            if (!vc.isSelected) { r = 0.25f; g = 0.90f; b = 0.70f; }
+
+            bool isSingleInput = (vc.typeStr == "NOT");
+            bool hasBubble = (vc.typeStr == "NOT" || vc.typeStr == "NAND" || vc.typeStr == "NOR" || vc.typeStr == "XNOR");
+            bool isXorFamily = (vc.typeStr == "XOR" || vc.typeStr == "XNOR");
+
+            if (isSingleInput) {
+                drawLocalLine(-60.0f, 0.0f, -20.0f, 0.0f, leadR, leadG, leadB, 2.0f);
+            } else {
+                float inputStopX = (vc.typeStr == "OR" || vc.typeStr == "NOR") ? -18.0f : (isXorFamily ? -23.0f : -22.0f);
+                drawLocalLine(-60.0f, -12.0f, inputStopX, -12.0f, leadR, leadG, leadB, 2.0f);
+                drawLocalLine(-60.0f,  12.0f, inputStopX,  12.0f, leadR, leadG, leadB, 2.0f);
+            }
+
+            float outStartX = hasBubble ? 28.0f : 20.0f;
+            drawLocalLine(outStartX, 0.0f, 60.0f, 0.0f, leadR, leadG, leadB, 2.0f);
+
+            if (vc.typeStr == "NOT") {
+                drawLocalLine(-20.0f, -18.0f, -20.0f, 18.0f, r, g, b, thick);
+                drawLocalLine(-20.0f, -18.0f,  18.0f,  0.0f, r, g, b, thick);
+                drawLocalLine(-20.0f,  18.0f,  18.0f,  0.0f, r, g, b, thick);
+            } else if (vc.typeStr == "AND" || vc.typeStr == "NAND") {
+                drawLocalLine(-22.0f, -20.0f, -22.0f, 20.0f, r, g, b, thick);
+                drawLocalLine(-22.0f, -20.0f,   0.0f, -20.0f, r, g, b, thick);
+                drawLocalLine(-22.0f,  20.0f,   0.0f,  20.0f, r, g, b, thick);
+                int arcSegs = 20;
+                float radius = 20.0f;
+                for (int s = 0; s < arcSegs; ++s) {
+                    float a1 = -0.5f * static_cast<float>(M_PI) + (s / (float)arcSegs) * static_cast<float>(M_PI);
+                    float a2 = -0.5f * static_cast<float>(M_PI) + ((s + 1) / (float)arcSegs) * static_cast<float>(M_PI);
+                    drawLocalLine(radius * std::cos(a1), radius * std::sin(a1),
+                                  radius * std::cos(a2), radius * std::sin(a2), r, g, b, thick);
+                }
+            } else {
+                int curveSegs = 16;
+                for (int s = 0; s < curveSegs; ++s) {
+                    float t1 = -1.0f + 2.0f * (s / (float)curveSegs);
+                    float t2 = -1.0f + 2.0f * ((s + 1) / (float)curveSegs);
+                    float x1 = -22.0f + 6.0f * (1.0f - t1 * t1);
+                    float y1 = 20.0f * t1;
+                    float x2 = -22.0f + 6.0f * (1.0f - t2 * t2);
+                    float y2 = 20.0f * t2;
+                    drawLocalLine(x1, y1, x2, y2, r, g, b, thick);
+                    if (isXorFamily) {
+                        drawLocalLine(x1 - 6.0f, y1, x2 - 6.0f, y2, r, g, b, thick);
+                    }
+                }
+                for (int s = 0; s < curveSegs; ++s) {
+                    float u1 = s / (float)curveSegs;
+                    float u2 = (s + 1) / (float)curveSegs;
+                    float x1 = -22.0f + 42.0f * u1;
+                    float y1 = 20.0f * (1.0f - u1 * u1);
+                    float x2 = -22.0f + 42.0f * u2;
+                    float y2 = 20.0f * (1.0f - u2 * u2);
+                    drawLocalLine(x1, -y1, x2, -y2, r, g, b, thick);
+                    drawLocalLine(x1,  y1, x2,  y2, r, g, b, thick);
+                }
+            }
+
+            if (hasBubble) {
+                int bSegs = 16;
+                float bRad = 4.5f;
+                float bCenterX = 23.5f;
+                for (int s = 0; s < bSegs; ++s) {
+                    float a1 = (s / (float)bSegs) * 2.0f * static_cast<float>(M_PI);
+                    float a2 = ((s + 1) / (float)bSegs) * 2.0f * static_cast<float>(M_PI);
+                    drawLocalLine(bCenterX + bRad * std::cos(a1), bRad * std::sin(a1),
+                                  bCenterX + bRad * std::cos(a2), bRad * std::sin(a2), r, g, b, thick);
+                }
+            }
+
+            if (isSingleInput) {
+                drawLocalCircle(-60.0f, 0.0f, 3.8f, 0.3f, 1.0f, 0.4f, 12);
+                drawLocalCircle( 60.0f, 0.0f, 3.8f, 0.3f, 1.0f, 0.4f, 12);
+            } else {
+                drawLocalCircle(-60.0f, -12.0f, 3.8f, 0.3f, 1.0f, 0.4f, 12);
+                drawLocalCircle(-60.0f,  12.0f, 3.8f, 0.3f, 1.0f, 0.4f, 12);
+                drawLocalCircle( 60.0f,   0.0f, 3.8f, 0.3f, 1.0f, 0.4f, 12);
+            }
+            continue;
+        }
+
         // --------------------------------------------------------------------
         // J. DEFAULT / LOGIC GATE / GENERIC PRIMITIVE BLOCK
         // --------------------------------------------------------------------
@@ -404,18 +499,27 @@ static void drawVisualSchematicGL(
             return { cx + lx * cosA - ly * sinA, cy + lx * sinA + ly * cosA };
         };
 
-        bool isThreeTerm = (vc.typeStr == "MOSFET" || vc.typeStr == "FinFET" ||
+        bool isTwoInputGate = (  vc.typeStr == "AND" || vc.typeStr == "NAND" ||
+            			 vc.typeStr == "OR"  || vc.typeStr == "NOR"  ||
+            			 vc.typeStr == "XOR" || vc.typeStr == "XNOR"
+        );
+	bool isThreeTerm = (vc.typeStr == "MOSFET" || vc.typeStr == "FinFET" ||
                             vc.typeStr == "GAAFET" || vc.typeStr == "RibbonFET" ||
                             vc.typeStr == "BJT");
 
-        std::vector<PinWorldPos> localPins;
-        if (isThreeTerm) {
-            // Pin 0: Gate/Base (-60, 0), Pin 1: Drain/Collector (25, -24), Pin 2: Source/Emitter (25, 24)
-            localPins.push_back(toWorld(-60.0f,   0.0f));
+	std::vector<PinWorldPos> localPins;
+        if (isTwoInputGate) {
+            // Pin 0: In A (-60, -12), Pin 1: In B (-60, 12), Pin 2: Out Y (60, 0)
+            localPins.push_back(toWorld(-60.0f, -12.0f));
+            localPins.push_back(toWorld(-60.0f,  12.0f));
+            localPins.push_back(toWorld( 60.0f,   0.0f));
+        } else if (isThreeTerm) {
+            // Pin 0: Drain/Collector (25, -24), Pin 1: Gate/Base (-60, 0), Pin 2: Source/Emitter (25, 24)
             localPins.push_back(toWorld( 25.0f, -24.0f));
+            localPins.push_back(toWorld(-60.0f,   0.0f));
             localPins.push_back(toWorld( 25.0f,  24.0f));
         } else {
-            // Pin 0: Left (-60, 0), Pin 1: Right (60, 0)
+            // Pin 0: Left (-60, 0), Pin 1: Right (60, 0) — covers 2-pin passives & NOT gates
             localPins.push_back(toWorld(-60.0f, 0.0f));
             localPins.push_back(toWorld( 60.0f, 0.0f));
         }
@@ -534,7 +638,7 @@ void FreyaLabVisualizer::regenerateNetlistTextFromVisuals() {
             std::transform(lowerNode.begin(), lowerNode.end(), lowerNode.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (lowerNode == "gnd" || lowerNode == "ground" || lowerNode == "0") ss << " 0"; else ss << " " << node;
         }
-        if (vc.name == "V1" || vc.typeStr == "V_Source") {
+        if (vc.name == "V1") {
             if (activeStimulus == StimulusType::DC_SINGLE) ss << " DC " << stimDcVolt;
             else if (activeStimulus == StimulusType::AC_SINUSOID) ss << " AC " << stimAcMag << " " << stimAcPhase;
             else if (activeStimulus == StimulusType::PULSE_SQUARE) {
@@ -544,68 +648,78 @@ void FreyaLabVisualizer::regenerateNetlistTextFromVisuals() {
                    << edgeTime << " " << edgeTime << " "
                    << (stimPulseWidth * 1e-6f) << " " << (stimPulsePeriod * 1e-6f) << ")";
             }
+        } else if (vc.typeStr == "V_Source") {
+            ss << " DC " << vc.scalarValue;
         } else {
             if (vc.typeStr == "Resistor" || vc.typeStr == "Capacitor" || vc.typeStr == "Inductor") ss << " " << std::scientific << vc.scalarValue;
         }
-        if (vc.typeStr == "MOSFET") ss << " nmos"; else if (vc.typeStr == "BJT") ss << " npn";
+        if (vc.typeStr == "MOSFET") {
+            ss << " nmos";
+        } else if (vc.typeStr == "BJT") {
+            ss << " npn";
+        } else if (vc.typeStr == "NOT" || vc.typeStr == "AND" || vc.typeStr == "NAND" ||
+                   vc.typeStr == "OR"  || vc.typeStr == "NOR" || vc.typeStr == "XOR"  || vc.typeStr == "XNOR") {
+            ss << " " << vc.typeStr;
+        }
         ss << "\n";
     }
     rawNetlistBuffer = ss.str();
 }
 
 void FreyaLabVisualizer::synchronizeVisualsFromNetlist() {
-    std::ofstream tmpFile("tmp_gui_netlist.ckt");
-    if (!tmpFile.is_open()) { 
-        g_netlistParseSuccess = false; 
-        g_parserErrorMessage = "Failed to open temporary netlist file stream."; 
-        return; 
-    }
-    tmpFile << rawNetlistBuffer;
-    tmpFile.close();
-    
-    Netlist localWorkspace;
-    FileParser freshParser;
-    
-    try {
-        freshParser.parseNetlistFile("tmp_gui_netlist.ckt", localWorkspace);
-        localWorkspace.buildSparsityPattern();
+    if (!netlistPtr) return;
+
+    auto populateVisualsFrom = [this](Netlist& sourceNetlist) {
         std::map<std::string, VisualComponent> retainedLayouts = visualComponents;
         visualComponents.clear();
         int indexOffset = 0;
-        
-        localWorkspace.inspectComponents([this, &localWorkspace, &indexOffset, &retainedLayouts](Component& comp, MnaIndex extraIdx) {
+
+        sourceNetlist.inspectComponents([this, &sourceNetlist, &indexOffset, &retainedLayouts](Component& comp, MnaIndex extraIdx) {
             (void)extraIdx;
             VisualComponent vc;
             vc.name = comp.getName();
             vc.scalarValue = comp.getValue();
-            
-            switch (comp.getType()) {
-                case ComponentType::RESISTOR:       		vc.typeStr = "Resistor"; break;
-                case ComponentType::VOLTAGE_SOURCE: 	vc.typeStr = "V_Source"; break;
-                case ComponentType::CAPACITOR:     	 	vc.typeStr = "Capacitor"; break;
-                case ComponentType::INDUCTOR: 		vc.typeStr = "Inductor"; break;
-                case ComponentType::DIODE:   			vc.typeStr = "Diode"; break;
-                case ComponentType::MOSFET:  			vc.typeStr = "MOSFET"; break;
-                case ComponentType::FINFET:			vc.typeStr = "FinFET"; break;
-                case ComponentType::RIBBONFET:		vc.typeStr = "RibbonFET"; break;
-                case ComponentType::GAA_FET:			vc.typeStr = "GAAFET"; break;
-                case ComponentType::BJT: 				vc.typeStr = "BJT"; break;
-                case ComponentType::DIGITAL_IC: 		vc.typeStr = "LogicGate"; break;
-                default:                   					vc.typeStr = "Primitive"; break;
+
+            if (auto* gateComp = dynamic_cast<BehaviorLogicGateComponent*>(&comp)) {
+                switch (gateComp->getGateType()) {
+                    case GateType::NOT:  vc.typeStr = "NOT";       break;
+                    case GateType::AND:  vc.typeStr = "AND";       break;
+                    case GateType::NAND: vc.typeStr = "NAND";      break;
+                    case GateType::OR:   vc.typeStr = "OR";        break;
+                    case GateType::NOR:  vc.typeStr = "NOR";       break;
+                    case GateType::XOR:  vc.typeStr = "XOR";       break;
+                    case GateType::XNOR: vc.typeStr = "XNOR";      break;
+                    default:             vc.typeStr = "LogicGate"; break;
+                }
+            } else {
+                switch (comp.getType()) {
+                    case ComponentType::RESISTOR:       vc.typeStr = "Resistor";  break;
+                    case ComponentType::VOLTAGE_SOURCE: vc.typeStr = "V_Source";  break;
+                    case ComponentType::CAPACITOR:      vc.typeStr = "Capacitor"; break;
+                    case ComponentType::INDUCTOR:       vc.typeStr = "Inductor";  break;
+                    case ComponentType::DIODE:          vc.typeStr = "Diode";     break;
+                    case ComponentType::MOSFET:         vc.typeStr = "MOSFET";    break;
+                    case ComponentType::FINFET:         vc.typeStr = "FinFET";    break;
+                    case ComponentType::RIBBONFET:      vc.typeStr = "RibbonFET"; break;
+                    case ComponentType::GAA_FET:        vc.typeStr = "GAAFET";    break;
+                    case ComponentType::BJT:            vc.typeStr = "BJT";       break;
+                    case ComponentType::DIGITAL_IC:     vc.typeStr = "LogicGate"; break;
+                    default:                            vc.typeStr = "Primitive"; break;
+                }
             }
-            
+
             for (const NetNode& node : comp.getNodes()) {
                 if (node.isGround()) {
                     vc.connectedNodes.push_back("GND");
                 } else {
-                    std::string nodeLabel = localWorkspace.getNodeName(node);
+                    std::string nodeLabel = sourceNetlist.getNodeName(node);
                     if (nodeLabel.rfind("Node_", 0) == 0) {
                         nodeLabel = nodeLabel.substr(5);
                     }
                     vc.connectedNodes.push_back(nodeLabel);
                 }
             }
-            
+
             auto it = retainedLayouts.find(vc.name);
             if (it != retainedLayouts.end()) {
                 vc.posX = it->second.posX;
@@ -621,18 +735,44 @@ void FreyaLabVisualizer::synchronizeVisualsFromNetlist() {
             visualComponents[vc.name] = vc;
             indexOffset++;
         });
-        
-        if (netlistPtr) {
-            *netlistPtr = std::move(localWorkspace);
-        }
+    };
+
+
+    if (rawNetlistBuffer.empty() && netlistPtr->getTotalSystemSize() > 0) {
+        netlistPtr->buildSparsityPattern();
+        populateVisualsFrom(*netlistPtr);
+        regenerateNetlistTextFromVisuals();
         g_netlistParseSuccess = true;
         g_parserErrorMessage = "";
-    } 
-    catch (const std::exception& e) {
+        return;
+    }
+
+    std::ofstream tmpFile("tmp_gui_netlist.ckt");
+    if (!tmpFile.is_open()) {
+        g_netlistParseSuccess = false;
+        g_parserErrorMessage = "Failed to open temporary netlist file stream.";
+        return;
+    }
+    tmpFile << rawNetlistBuffer;
+    tmpFile.close();
+
+    Netlist localWorkspace;
+    FileParser freshParser;
+
+    try {
+        freshParser.parseNetlistFile("tmp_gui_netlist.ckt", localWorkspace);
+        localWorkspace.buildSparsityPattern();
+        populateVisualsFrom(localWorkspace);
+
+        *netlistPtr = std::move(localWorkspace);
+        g_netlistParseSuccess = true;
+        g_parserErrorMessage = "";
+    } catch (const std::exception& e) {
         g_netlistParseSuccess = false;
         g_parserErrorMessage = e.what();
     }
 }
+
 
 // ============================================================================
 // CORE ACCURATE TRANSIENT AND PHASOR MATHEMATICAL SIMULATION DISPATCHER
@@ -658,12 +798,17 @@ void FreyaLabVisualizer::executeActiveSimulation() {
     if (analysisTypeActive == 1) {
         try {
             PulseCircuit pulseAnalyzer(*netlistPtr);
-            if (pulseAnalyzer.isPulseCircuit()) {
+                        if (pulseAnalyzer.isPulseCircuit()) {
                 PulseSimulationOptions pulseOptions;
-                pulseOptions.startTime = 0.0;     pulseOptions.stopTime = 200e-6; 
-                pulseOptions.initialDt = 10e-9;   pulseOptions.minDt = 1e-15;
-                pulseOptions.maxDt = 1e-5;        pulseOptions.relTol = 1e-3;
-                pulseOptions.absTol = 1e-6;       pulseOptions.maxIterations = 80;
+                double periodSec = std::max(1e-7, static_cast<double>(stimPulsePeriod) * 1e-6);
+                pulseOptions.startTime = 0.0;
+                pulseOptions.stopTime  = 3.0 * periodSec;
+                pulseOptions.initialDt = periodSec / 200.0;
+                pulseOptions.minDt     = 1e-16;
+                pulseOptions.maxDt     = periodSec / 20.0;
+                pulseOptions.relTol    = 1e-3;
+                pulseOptions.absTol    = 1e-6;
+                pulseOptions.maxIterations = 80;
                 
                 netlistPtr->buildSparsityPattern();
                 double t = pulseOptions.startTime;
@@ -672,16 +817,21 @@ void FreyaLabVisualizer::executeActiveSimulation() {
                 
                 MnaMatrixContext ctx{ 
                     netlistPtr->getGMatrix(), netlistPtr->getBVector(), &netlistPtr->getStateV(),
-                    &netlistPtr->getHistoricV(), &netlistPtr->getMidpointV(), t, dt, 0, MnaIndex{}
+                    &netlistPtr->getHistoricV(), &netlistPtr->getMidpointV(), t, dt, 0, MnaIndex{},
+                    netlistPtr->getTemperatureCelsius(),
+                    netlistPtr->getThermalVoltage()
                 };
 
                 ctx.orderStep = 0; ctx.time = t; ctx.dt = 0.0;
                 if (netlistPtr->runNewtonRaphson(ctx, 100, pulseOptions.relTol, pulseOptions.absTol)) {
                     netlistPtr->getHistoricV() = netlistPtr->getStateV();
                     netlistPtr->getMidpointV() = netlistPtr->getStateV();
+                    ctx.currentIterV = &netlistPtr->getStateV();
+                    ctx.historicStepV = &netlistPtr->getHistoricV();
                     
                     netlistPtr->inspectComponents([&ctx](Component& comp, MnaIndex extraIdx) {
-                        (void)extraIdx; comp.updateHistory(ctx);
+                        ctx.assignedExtraIdx = extraIdx;
+                        comp.updateHistory(ctx);
                     });
                     
                     while (t < pulseOptions.stopTime) {
@@ -693,7 +843,8 @@ void FreyaLabVisualizer::executeActiveSimulation() {
                         });
                         
                         // PHASE 1 (TR Midpoint)
-                        ctx.time = t + gamma * dt; ctx.dt = gamma * dt; ctx.orderStep = 1;
+                        ctx.time = t + gamma * dt; ctx.dt = dt; ctx.orderStep = 1;
+                        ctx.currentIterV = &netlistPtr->getStateV();
                         if (!netlistPtr->runNewtonRaphson(ctx, pulseOptions.maxIterations, pulseOptions.relTol, pulseOptions.absTol)) {
                             if (dt <= pulseOptions.minDt * 1.01) {
                                 // Fallback: try once with relaxed tolerance at floor timestep before aborting
@@ -710,16 +861,24 @@ void FreyaLabVisualizer::executeActiveSimulation() {
                                 continue;
                             }
                         }
+                        // Record converged TR midpoint state (n + gamma) into component history
                         netlistPtr->getMidpointV() = netlistPtr->getStateV();
-                        
+                        ctx.currentIterV = &netlistPtr->getMidpointV();
+                        netlistPtr->inspectComponents([&ctx](Component& comp, MnaIndex extraIdx) {
+                            ctx.assignedExtraIdx = extraIdx;
+                            comp.updateHistory(ctx);
+                        });
+
+
                         // PHASE 2 (BDF2 Composite Step)
                         ctx.time = t + dt; ctx.dt = dt; ctx.orderStep = 2;
                         if (!netlistPtr->runNewtonRaphson(ctx, pulseOptions.maxIterations, pulseOptions.relTol, pulseOptions.absTol)) {
-                            if (!netlistPtr->runNewtonRaphson(ctx, 150, pulseOptions.relTol * 10.0, pulseOptions.absTol * 10.0)) {
+                            if (dt <= pulseOptions.minDt * 1.01) {
+                                if (!netlistPtr->runNewtonRaphson(ctx, 150, pulseOptions.relTol * 10.0, pulseOptions.absTol * 10.0)) {
                                     std::cerr << "[GUI Solver Warning] BDF2 step stalled at t = " << (t * 1e6) << " us. Stopping sweep gracefully.\n";
                                     break;
                                 }
-                             else {
+                            } else {
                                 dt = std::max(dt * 0.5, pulseOptions.minDt);
                                 netlistPtr->getStateV() = backupState;
                                 netlistPtr->inspectComponents([](Component& comp, MnaIndex extraIdx) {
@@ -728,6 +887,7 @@ void FreyaLabVisualizer::executeActiveSimulation() {
                                 continue;
                             }
                         }
+
                         
                         double error = netlistPtr->estimateLocalTruncationError(dt, gamma, pulseOptions.relTol, pulseOptions.absTol);
                         if (error > 1.0 && dt > pulseOptions.minDt) {
@@ -738,7 +898,7 @@ void FreyaLabVisualizer::executeActiveSimulation() {
                             });
                             continue;
                         }
-         
+                        
                         const auto& state = netlistPtr->getCurrentState();
                         plotTimeSteps.push_back((t + dt) * 1e6);
                         plotInputWaveform.push_back(getSafeVoltage(state, inputNode));
@@ -748,10 +908,11 @@ void FreyaLabVisualizer::executeActiveSimulation() {
                         ctx.time = t; ctx.dt = dt; ctx.orderStep = 2;
                         ctx.currentIterV = &netlistPtr->getStateV();
                         netlistPtr->inspectComponents([&ctx](Component& comp, MnaIndex extraIdx) {
-                            (void)extraIdx; comp.updateHistory(ctx);
+                            ctx.assignedExtraIdx = extraIdx;
+                            comp.updateHistory(ctx);
                         });
                         netlistPtr->getHistoricV() = netlistPtr->getStateV();
-                        
+
                         if (error < 0.5) {
                             double factor = 0.9 * std::pow(1.0 / (error + 1e-6), 1.0 / 3.0);
                             dt = std::min(dt * std::max(0.1, std::min(factor, 2.0)), pulseOptions.maxDt);
@@ -764,20 +925,24 @@ void FreyaLabVisualizer::executeActiveSimulation() {
             std::cerr << "[GUI Solver Error] Pulse execution failure: " << e.what() << std::endl;
         }
     }
-    // --- MODE 2: PHASOR DOMAIN COMPLEX FREQUENCY RESPONSE (BODE SWEEP) ---
+        // --- MODE 2: PHASOR DOMAIN COMPLEX FREQUENCY RESPONSE (BODE SWEEP) ---
     else if (analysisTypeActive == 2) {
         try {
             DCCircuit dcSolver(*netlistPtr);
             dcSolver.solveMna();
         } catch (...) {}
 
-        CsrMatrixComplex A_complex, L_complex, U_complex; 
+        CsrMatrixComplex A_complex, L_complex, U_complex;
         std::vector<int> P_complex;
-        
         A_complex.initializeFromPattern(netlistPtr->getGMatrix());
-        L_complex.initializeFromPattern(netlistPtr->getGMatrix());
-        U_complex.initializeFromPattern(netlistPtr->getGMatrix());
-        
+
+        bool useKlu = netlistPtr->isUsingKluBackend();
+        if (!useKlu) {
+            L_complex.initializeFromPattern(netlistPtr->getGMatrix());
+            U_complex.initializeFromPattern(netlistPtr->getGMatrix());
+            P_complex.resize(systemSize, 0);
+        }
+
         std::vector<std::complex<double>> B_complex(systemSize, std::complex<double>(0.0, 0.0));
         const std::vector<double>& dcState = netlistPtr->getCurrentState();
 
@@ -803,7 +968,6 @@ void FreyaLabVisualizer::executeActiveSimulation() {
             double omega = 2.0 * M_PI * freq;
             A_complex.zero();
             std::fill(B_complex.begin(), B_complex.end(), std::complex<double>(0.0, 0.0));
-            P_complex.clear();
 
             netlistPtr->inspectComponents([&A_complex, &B_complex, omega, &dcState](Component& comp, MnaIndex extraIdx) {
                 (void)extraIdx; comp.stampAC(A_complex, B_complex, omega, dcState);
@@ -814,8 +978,23 @@ void FreyaLabVisualizer::executeActiveSimulation() {
             }
 
             try {
-                if (CircuitMath::luFactorizeComplex(A_complex, L_complex, U_complex, P_complex)) {
-                    std::vector<std::complex<double>> X_complex = CircuitMath::luSolveComplex(L_complex, U_complex, P_complex, B_complex);
+                std::vector<std::complex<double>> X_complex;
+                bool solved = false;
+
+                if (useKlu) {
+                    if (KluSolver::factorizeNumericComplex(A_complex, netlistPtr->getKluCache())) {
+                        X_complex = KluSolver::solveNumericComplex(netlistPtr->getKluCache(), B_complex);
+                        solved = true;
+                    }
+                } else {
+                    P_complex.assign(systemSize, 0);
+                    if (CircuitMath::luFactorizeComplex(A_complex, L_complex, U_complex, P_complex)) {
+                        X_complex = CircuitMath::luSolveComplex(L_complex, U_complex, P_complex, B_complex);
+                        solved = true;
+                    }
+                }
+
+                if (solved && X_complex.size() == static_cast<size_t>(systemSize)) {
                     std::complex<double> vOut_phasor(0.0, 0.0);
                     std::complex<double> vIn_phasor(1.0, 0.0);
 
@@ -827,7 +1006,7 @@ void FreyaLabVisualizer::executeActiveSimulation() {
 
                     double magnitude = std::abs(hTransfer);
                     double magnitudeDb = 20.0 * std::log10(std::max(magnitude, 1e-12));
-                    
+
                     plotFrequencies.push_back(std::log10(freq));
                     plotBodeMagnitudeDb.push_back(magnitudeDb);
                     plotNyquistReal.push_back(hTransfer.real());
@@ -836,13 +1015,12 @@ void FreyaLabVisualizer::executeActiveSimulation() {
             } catch (...) { continue; }
         }
 
-        // 2. Evaluate exact MNA phasors, power, and Tab 2 waveforms at the user-selected AC Test Frequency
+                // 2. Evaluate exact MNA phasors, power, and Tab 2 waveforms at the user-selected AC Test Frequency
         double testFreq = std::max(1.0, static_cast<double>(g_acTestFrequencyHz));
         double testOmega = 2.0 * M_PI * testFreq;
 
         A_complex.zero();
         std::fill(B_complex.begin(), B_complex.end(), std::complex<double>(0.0, 0.0));
-        P_complex.clear();
 
         netlistPtr->inspectComponents([&A_complex, &B_complex, testOmega, &dcState](Component& comp, MnaIndex extraIdx) {
             (void)extraIdx;
@@ -854,8 +1032,23 @@ void FreyaLabVisualizer::executeActiveSimulation() {
         }
 
         try {
-            if (CircuitMath::luFactorizeComplex(A_complex, L_complex, U_complex, P_complex)) {
-                std::vector<std::complex<double>> X_test = CircuitMath::luSolveComplex(L_complex, U_complex, P_complex, B_complex);
+            std::vector<std::complex<double>> X_test;
+            bool testSolved = false;
+
+            if (useKlu) {
+                if (KluSolver::factorizeNumericComplex(A_complex, netlistPtr->getKluCache())) {
+                    X_test = KluSolver::solveNumericComplex(netlistPtr->getKluCache(), B_complex);
+                    testSolved = true;
+                }
+            } else {
+                P_complex.assign(systemSize, 0);
+                if (CircuitMath::luFactorizeComplex(A_complex, L_complex, U_complex, P_complex)) {
+                    X_test = CircuitMath::luSolveComplex(L_complex, U_complex, P_complex, B_complex);
+                    testSolved = true;
+                }
+            }
+
+            if (testSolved && X_test.size() == static_cast<size_t>(systemSize)) {
                 g_latestAcNodePhasors = X_test;
 
                 // Update Complex Power (P, Q, S, PF) at g_acTestFrequencyHz
@@ -904,6 +1097,7 @@ void FreyaLabVisualizer::executeActiveSimulation() {
         } catch (...) {}
     } // <--- End of "else if (analysisTypeActive == 2)"
 } // <--- End of "FreyaLabVisualizer::executeActiveSimulation()"
+
 
 // ============================================================================
 // MAIN REVOLUTIONARY GUI GRAPHICAL INTEGRATION WORKSPACE LOOP
@@ -1139,7 +1333,14 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
         ImGui::SetNextWindowSize(ImVec2(420.0f, static_cast<float>(windowHeight)), ImGuiCond_Always);
         ImGui::Begin("FreyaLab Simulation Blueprint Layer", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
 
-        ImGui::SeparatorText("Live Text Compiler");
+        int totalEqs = netlistPtr ? netlistPtr->getTotalSystemSize() : 0;
+        ImGui::Text("MNA Matrix Size: %d equations", totalEqs);
+        ImGui::TextColored(ImVec4(0.2f, 0.85f, 0.65f, 1.0f),
+                           "Linear Solver: %s",
+                           getActiveSolverBackendName());
+        ImGui::Separator();
+
+	ImGui::SeparatorText("Live Text Compiler");
         if (ImGui::InputTextMultiline("##editor", textBuffer, sizeof(textBuffer), ImVec2(-1.0f, 320.0f), ImGuiInputTextFlags_AllowTabInput)) {
             rawNetlistBuffer = textBuffer;
             synchronizeVisualsFromNetlist();
@@ -1197,34 +1398,48 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
             ImGui::EndCombo();
         }
 
+        bool sliderReleased = false;
         if (activeStimulus == StimulusType::DC_SINGLE) {
             if (ImGui::DragFloat("DC Voltage (V)", &stimDcVolt, 0.1f, -100.0f, 100.0f, "%.2f V")) paramChanged = true;
+            sliderReleased |= ImGui::IsItemDeactivatedAfterEdit();
         } else if (activeStimulus == StimulusType::AC_SINUSOID) {
             if (ImGui::DragFloat("AC Magnitude", &stimAcMag, 0.1f, 0.0f, 100.0f, "%.2f V")) paramChanged = true;
+            sliderReleased |= ImGui::IsItemDeactivatedAfterEdit();
             if (ImGui::DragFloat("AC Phase (Deg)", &stimAcPhase, 1.0f, -360.0f, 360.0f, "%.1f deg")) paramChanged = true;
+            sliderReleased |= ImGui::IsItemDeactivatedAfterEdit();
         } else if (activeStimulus == StimulusType::PULSE_SQUARE) {
             if (ImGui::DragFloat("V_Low (V)", &stimPulseLow, 0.1f, -100.0f, 100.0f, "%.2f V")) paramChanged = true;
+            sliderReleased |= ImGui::IsItemDeactivatedAfterEdit();
             if (ImGui::DragFloat("V_High (V)", &stimPulseHigh, 0.1f, -100.0f, 100.0f, "%.2f V")) paramChanged = true;
-            float maxAllowedWidth = std::max(0.001f, stimPulsePeriod - 0.001f);
-	    if (ImGui::DragFloat("Pulse Width (us)", &stimPulseWidth, 0.1f, 0.001f, maxAllowedWidth, "%.3f us")) {
-		paramChanged = true;
-	    }
-	    if (ImGui::DragFloat("Period (us)", &stimPulsePeriod, 0.1f, 0.002f, 2000.0f, "%.3f us")) {
-	    // Jika Period diperkecil hingga menyentuh/di bawah Pulse Width, sesuaikan Pulse Width otomatis
- 	       if (stimPulseWidth >= stimPulsePeriod) {
-	           stimPulseWidth = std::max(0.001f, stimPulsePeriod * 0.5f);
-	        }
-	        paramChanged = true;
-	    }
+            sliderReleased |= ImGui::IsItemDeactivatedAfterEdit();
 
+            float maxAllowedWidth = std::max(0.001f, stimPulsePeriod - 0.001f);
+            if (ImGui::DragFloat("Pulse Width (us)", &stimPulseWidth, 0.1f, 0.001f, maxAllowedWidth, "%.3f us")) {
+                paramChanged = true;
+            }
+            sliderReleased |= ImGui::IsItemDeactivatedAfterEdit();
+
+            if (ImGui::DragFloat("Period (us)", &stimPulsePeriod, 0.1f, 0.002f, 2000.0f, "%.3f us")) {
+                if (stimPulseWidth >= stimPulsePeriod) {
+                    stimPulseWidth = std::max(0.001f, stimPulsePeriod * 0.5f);
+                }
+                paramChanged = true;
+            }
+            sliderReleased |= ImGui::IsItemDeactivatedAfterEdit();
         }
 
-        if (paramChanged) {
+        static double lastSimTriggerTime = 0.0;
+        if (paramChanged || sliderReleased) {
             regenerateNetlistTextFromVisuals();
             std::memset(textBuffer, 0, sizeof(textBuffer));
             std::strncpy(textBuffer, rawNetlistBuffer.c_str(), std::min(sizeof(textBuffer) - 1, rawNetlistBuffer.length()));
-            synchronizeVisualsFromNetlist();
-            if (!isSimulationPaused && g_netlistParseSuccess) executeActiveSimulation();
+
+            double now = glfwGetTime();
+            if (sliderReleased || (now - lastSimTriggerTime) > 0.12) {
+                lastSimTriggerTime = now;
+                synchronizeVisualsFromNetlist();
+                if (!isSimulationPaused && g_netlistParseSuccess) executeActiveSimulation();
+            }
         }
 
         ImGui::End();
@@ -1271,7 +1486,12 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
                 };
             };
 
-            bool isThreeTerm = (
+            bool isTwoInputGate = (
+                vc.typeStr == "AND" || vc.typeStr == "NAND" ||
+                vc.typeStr == "OR"  || vc.typeStr == "NOR"  ||
+                vc.typeStr == "XOR" || vc.typeStr == "XNOR"
+            );
+	    bool isThreeTerm = (
                 vc.typeStr == "MOSFET" ||
                 vc.typeStr == "FinFET" ||
                 vc.typeStr == "GAAFET" ||
@@ -1279,21 +1499,30 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
                 vc.typeStr == "BJT"
             );
 
-            if (isThreeTerm) {
-                // Pin 0: Gate / Base (-60, 0)
+            if (isTwoInputGate) {
+                // Pin 0: In A (-60, -12), Pin 1: In B (-60, 12), Pin 2: Out Y (60, 0)
                 if (vc.connectedNodes.size() >= 1) {
-                    rotatedNodePositions[vc.connectedNodes[0]].push_back(toScreenPin(-60.0f, 0.0f));
+                    rotatedNodePositions[vc.connectedNodes[0]].push_back(toScreenPin(-60.0f, -12.0f));
                 }
-                // Pin 1: Drain / Collector (25, -24)
                 if (vc.connectedNodes.size() >= 2) {
-                    rotatedNodePositions[vc.connectedNodes[1]].push_back(toScreenPin(25.0f, -24.0f));
+                    rotatedNodePositions[vc.connectedNodes[1]].push_back(toScreenPin(-60.0f,  12.0f));
                 }
-                // Pin 2: Source / Emitter (25, 24)
+                if (vc.connectedNodes.size() >= 3) {
+                    rotatedNodePositions[vc.connectedNodes[2]].push_back(toScreenPin( 60.0f,   0.0f));
+                }
+            } else if (isThreeTerm) {
+                // Pin 0: Drain / Collector (25, -24), Pin 1: Gate / Base (-60, 0), Pin 2: Source / Emitter (25, 24)
+                if (vc.connectedNodes.size() >= 1) {
+                    rotatedNodePositions[vc.connectedNodes[0]].push_back(toScreenPin(25.0f, -24.0f));
+                }
+                if (vc.connectedNodes.size() >= 2) {
+                    rotatedNodePositions[vc.connectedNodes[1]].push_back(toScreenPin(-60.0f, 0.0f));
+                }
                 if (vc.connectedNodes.size() >= 3) {
                     rotatedNodePositions[vc.connectedNodes[2]].push_back(toScreenPin(25.0f, 24.0f));
                 }
-            } else {
-                // 2-Node Devices: Pin 0 Left (-60, 0), Pin 1 Right (60, 0)
+	    } else {
+                // 2-Terminal Devices & NOT Gate: Pin 0 Left (-60, 0), Pin 1 Right (60, 0)
                 if (vc.connectedNodes.size() >= 1) {
                     rotatedNodePositions[vc.connectedNodes[0]].push_back(toScreenPin(-60.0f, 0.0f));
                 }
@@ -1494,25 +1723,38 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
                     ImGui::TableSetupColumn("Node Pins"); ImGui::TableSetupColumn("Voltage Drop (V)"); ImGui::TableSetupColumn("Power Level (W)");
                     ImGui::TableHeadersRow();
 
-                    SimulationContext dcSimCtx{ activeState, 0.0, 0 };
+                    SimulationContext dcSimCtx{ activeState, 0.0, 0 , 0.0};
 
                     netlistPtr->inspectComponents([this, &activeState, &dcSimCtx](Component& comp, MnaIndex extraIdx) {
                         ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::Text("%s", comp.getName().c_str());
                         ImGui::TableNextColumn();
                         std::string typeStr;
-                        switch (comp.getType()) {
-                            case ComponentType::RESISTOR:			typeStr = "Resistor"; break;
-                            case ComponentType::DIODE:				typeStr = "Diode"; break;
-                            case ComponentType::CAPACITOR:			typeStr = "Capacitor"; break;
-                            case ComponentType::INDUCTOR:			typeStr = "Inductor"; break;
-                            case ComponentType::MOSFET: 			typeStr = "MOSFET"; break;
-                            case ComponentType::FINFET:				typeStr = "FinFET"; break;
-                	    case ComponentType::RIBBONFET:			typeStr = "RibbonFET"; break;
-                            case ComponentType::GAA_FET:  			typeStr = "GAAFET"; break;
-                            case ComponentType::BJT:  				typeStr = "BJT"; break;
-                            case ComponentType::VOLTAGE_SOURCE: 	typeStr = "V-Source"; break;
-                            case ComponentType::DIGITAL_IC: 			typeStr = "Logic Gate"; break;
-                            default:  								typeStr = "Primitive"; break;
+                        if (auto* gateComp = dynamic_cast<BehaviorLogicGateComponent*>(&comp)) {
+                            switch (gateComp->getGateType()) {
+                                case GateType::NOT:  typeStr = "NOT Gate";   break;
+                                case GateType::AND:  typeStr = "AND Gate";   break;
+                                case GateType::NAND: typeStr = "NAND Gate";  break;
+                                case GateType::OR:   typeStr = "OR Gate";    break;
+                                case GateType::NOR:  typeStr = "NOR Gate";   break;
+                                case GateType::XOR:  typeStr = "XOR Gate";   break;
+                                case GateType::XNOR: typeStr = "XNOR Gate";  break;
+                                default:             typeStr = "Logic Gate"; break;
+                            }
+                        } else {
+                            switch (comp.getType()) {
+                                case ComponentType::RESISTOR:       typeStr = "Resistor";   break;
+                                case ComponentType::DIODE:          typeStr = "Diode";      break;
+                                case ComponentType::CAPACITOR:      typeStr = "Capacitor";  break;
+                                case ComponentType::INDUCTOR:       typeStr = "Inductor";   break;
+                                case ComponentType::MOSFET:         typeStr = "MOSFET";     break;
+                                case ComponentType::FINFET:         typeStr = "FinFET";     break;
+                                case ComponentType::RIBBONFET:      typeStr = "RibbonFET";  break;
+                                case ComponentType::GAA_FET:        typeStr = "GAAFET";     break;
+                                case ComponentType::BJT:            typeStr = "BJT";        break;
+                                case ComponentType::VOLTAGE_SOURCE: typeStr = "V-Source";   break;
+                                case ComponentType::DIGITAL_IC:     typeStr = "Logic Gate"; break;
+                                default:                            typeStr = "Primitive";  break;
+                            }
                         }
                         ImGui::Text("%s", typeStr.c_str()); ImGui::TableNextColumn();
 
@@ -2238,6 +2480,117 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
                 ImGui::EndGroup();
                 ImGui::EndTabItem();
             }
+	    // TAB 11: DIGITAL LOGIC ANALYZER (STACKED TIMING DIAGRAM + GATE EVALUATOR)
+            if (ImGui::BeginTabItem("Digital Logic Analyzer")) {
+                static float logicThresholdV = 2.5f;
+                static int selectedGateIdx = 1; // Default: AND
+                static bool autoSyncNetlistGate = true;
+
+                const char* gateNames[] = { "NOT", "AND", "OR", "XOR", "NAND", "NOR", "XNOR" };
+                const GateType gateEnums[] = {
+                    GateType::NOT, GateType::AND, GateType::OR,
+                    GateType::XOR, GateType::NAND, GateType::NOR, GateType::XNOR
+                };
+
+                // Detect if a BehaviorLogicGateComponent exists in the active netlist
+                BehaviorLogicGateComponent* activeGateComp = nullptr;
+                if (netlistPtr) {
+                    netlistPtr->inspectComponents([&](Component& comp, MnaIndex extraIdx) {
+                        (void)extraIdx;
+                        if (auto* g = dynamic_cast<BehaviorLogicGateComponent*>(&comp)) {
+                            if (!activeGateComp || comp.getName() == selectedCompName) {
+                                activeGateComp = g;
+                            }
+                        }
+                    });
+                }
+
+                // Auto-sync dropdown to the netlist gate type if enabled
+                if (autoSyncNetlistGate && activeGateComp) {
+                    GateType netlistGateType = activeGateComp->getGateType();
+                    for (int gIdx = 0; gIdx < 7; ++gIdx) {
+                        if (gateEnums[gIdx] == netlistGateType) {
+                            selectedGateIdx = gIdx;
+                            break;
+                        }
+                    }
+                }
+
+                ImGui::SetNextItemWidth(150.0f);
+                ImGui::SliderFloat("CMOS Threshold (V)", &logicThresholdV, 0.5f, 4.5f, "%.2f V");
+                ImGui::SameLine();
+
+                if (activeGateComp) {
+                    ImGui::Checkbox("Sync Netlist Gate", &autoSyncNetlistGate);
+                    ImGui::SameLine();
+                }
+
+                ImGui::BeginDisabled(autoSyncNetlistGate && activeGateComp != nullptr);
+                ImGui::SetNextItemWidth(100.0f);
+                ImGui::Combo("Gate", &selectedGateIdx, gateNames, 7);
+                ImGui::EndDisabled();
+
+                // Live discrete logic states from latest waveform samples
+                double latestVA = plotInputWaveform.empty() ? 0.0 : plotInputWaveform.back();
+                double latestVB = plotOutputWaveform.empty() ? 0.0 : plotOutputWaveform.back();
+                uint8_t bitA = (latestVA >= logicThresholdV) ? 1 : 0;
+                uint8_t bitB = (latestVB >= logicThresholdV) ? 1 : 0;
+                uint8_t gateOut = LogicGates::evaluateScalarGate(gateEnums[selectedGateIdx], latestVA, latestVB, logicThresholdV);
+
+                ImGui::SameLine();
+                if (activeGateComp) {
+                    ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.7f, 1.0f),
+                                       " | Netlist [%s: %s]  A=%u, Out=%u",
+                                       activeGateComp->getName().c_str(), gateNames[selectedGateIdx], bitA, bitB);
+                } else {
+                    ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.7f, 1.0f),
+                                       " | Virtual Gate: A=%u, B=%u -> %s=%u",
+                                       bitA, bitB, gateNames[selectedGateIdx], gateOut);
+                }
+
+                float analyzerHeight = std::max(140.0f, ImGui::GetContentRegionAvail().y - 10.0f);
+
+                if (ImPlot::BeginPlot("##digital_logic_analyzer", ImVec2(-1.0f, analyzerHeight))) {
+                    ImPlot::SetupAxes("Time (us)", "Stacked Digital Channels");
+                    ImPlot::SetupAxesLimits(0.0, plotTimeSteps.empty() ? 200.0 : plotTimeSteps.back(), -0.3, 4.4, ImPlotCond_Always);
+
+                    const double yTicks[] = { 0.0, 0.8, 1.5, 2.3, 3.0, 3.8 };
+                    const char* yLabels[] = { "Y:0", "Y:1", "B:0", "B:1", "A:0", "A:1" };
+                    ImPlot::SetupAxisTicks(ImAxis_Y1, yTicks, 6, yLabels);
+
+                    if (!plotTimeSteps.empty() && plotTimeSteps.size() == plotInputWaveform.size()) {
+                        size_t n = plotTimeSteps.size();
+                        std::vector<double> chA(n), chB(n), chGateY(n);
+
+                        for (size_t i = 0; i < n; ++i) {
+                            double vA = plotInputWaveform[i];
+                            double vB = (i < plotOutputWaveform.size()) ? plotOutputWaveform[i] : 0.0;
+
+                            uint8_t logicA = (vA >= logicThresholdV) ? 1 : 0;
+                            uint8_t logicB = (vB >= logicThresholdV) ? 1 : 0;
+                            uint8_t logicY = LogicGates::evaluateScalarGate(gateEnums[selectedGateIdx], vA, vB, logicThresholdV);
+
+                            chA[i]     = 3.0 + 0.8 * logicA;
+                            chB[i]     = 1.5 + 0.8 * logicB;
+                            chGateY[i] = 0.0 + 0.8 * logicY;
+                        }
+
+                        PlotStairsStyled("Channel A (Input)",       plotTimeSteps.data(), chA.data(),     static_cast<int>(n), ImVec4(0.2f, 0.75f, 1.0f, 1.0f), 2.5f);
+			PlotStairsStyled("Channel B (Probed Out)",  plotTimeSteps.data(), chB.data(),     static_cast<int>(n), ImVec4(1.0f, 0.70f, 0.2f, 1.0f), 2.5f);
+			PlotStairsStyled("Evaluated Gate Y",        plotTimeSteps.data(), chGateY.data(), static_cast<int>(n), ImVec4(0.2f, 0.95f, 0.5f, 1.0f), 3.0f);
+                    }
+
+                    if (ImPlot::IsPlotHovered()) {
+                        ImPlotPoint mouseCoord = ImPlot::GetPlotMousePos();
+                        ImGui::BeginTooltip();
+                        ImGui::Text("Time: %.3f us", mouseCoord.x);
+                        ImGui::EndTooltip();
+                    }
+                    ImPlot::EndPlot();
+                }
+                ImGui::EndTabItem();
+            }
+
 
             ImGui::EndTabBar();
         }

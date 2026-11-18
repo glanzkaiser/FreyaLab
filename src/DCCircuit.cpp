@@ -25,7 +25,9 @@ bool DCCircuit::solveMna() {
         0.0,         // Time
         0.0,         // dt
         0,           // orderStep: 0 = DC Operating Point
-        MnaIndex{}   // assignedExtraIdx: Managed dynamically during Component iteration loop
+        MnaIndex{},   // assignedExtraIdx: Managed dynamically during Component iteration loop
+	netlist.getTemperatureCelsius(),
+        netlist.getThermalVoltage()
     };
 
     return netlist.runNewtonRaphson(ctx, 150, 1e-3, 1e-6);
@@ -43,7 +45,7 @@ void DCCircuit::printOperatingPointTable(const std::vector<double>& state) {
               << std::setw(15) << "Type" << "\n"
               << "---------------------------------------------------------------------------------------\n";
 
-    SimulationContext simCtx{ state, 0.0, 0 };
+    SimulationContext simCtx{ state, 0.0, 0, 0.0 };
 
     netlist.inspectComponents([&state, &simCtx](const Component& comp, MnaIndex extraIdx) {
         double vDrop = comp.calculateVoltageDrop(state);
@@ -97,7 +99,7 @@ void DCCircuit::printOperatingPointTable(const std::vector<double>& state) {
               << std::setw(20) << "Term 3 (E/S)" << "\n";
     std::cout << "---------------------------------------------------------------------------------------\n";
 
-    netlist.inspectComponents([&state, &simCtx](const Component& comp, MnaIndex extraIdx) {
+    netlist.inspectComponents([this, &state, &simCtx](const Component& comp, MnaIndex extraIdx) {
         const auto& nodes = comp.getNodes();
         if (nodes.size() < 3) return;
 
@@ -110,7 +112,7 @@ void DCCircuit::printOperatingPointTable(const std::vector<double>& state) {
 
             // Use the device's own polarized VBIC current model + base current approximation
             double I_c = comp.calculateCurrent(simCtx, extraIdx);
-            double Vt = 0.025851991;
+            double Vt = netlist.getThermalVoltage();
             double vbe_abs = std::abs(vB - vE);
             double vbc_abs = std::abs(vB - vC);
             double If = 1e-16 * (std::exp(std::min(vbe_abs / Vt, 40.0)) - 1.0);
@@ -190,12 +192,24 @@ void DCCircuit::runDcSweepAnalysis(const std::string& sourceName, double startVa
     csvI << "\n";
     csvP << "\n";
 
-    if (stepVal <= 0.0) stepVal = 0.1;
-    double currentSweepVal = startVal;
+    // Automatically align step magnitude and sign with sweep direction (startVal -> stopVal)
+    double stepMag = (std::abs(stepVal) > 1e-15) ? std::abs(stepVal) : 0.1;
+    double signedStep = (stopVal >= startVal) ? stepMag : -stepMag;
+    double eps = stepMag * 0.01;
 
+    double currentSweepVal = startVal;
     std::vector<double> lastValidState = netlist.getCurrentState();
 
-    while (currentSweepVal <= stopVal + (stepVal * 0.01)) {
+    auto hasMoreSteps = [&]() -> bool {
+        if (std::abs(stopVal - startVal) <= 1e-15) {
+            return std::abs(currentSweepVal - startVal) <= eps;
+        }
+        return (signedStep > 0.0)
+            ? (currentSweepVal <= stopVal + eps)
+            : (currentSweepVal >= stopVal - eps);
+    };
+
+    while (hasMoreSteps()) {
         // Mutate target DC source (or BSIM-CMG VTH0) sweep value
         netlist.inspectComponents([&sourceName, currentSweepVal](Component& comp, MnaIndex extraIdx) {
             (void)extraIdx;
@@ -213,7 +227,9 @@ void DCCircuit::runDcSweepAnalysis(const std::string& sourceName, double startVa
             0.0,         // time
             0.0,         // dt (0.0 for static DC)
             0,           // orderStep: 0 = DC Operating Point
-            MnaIndex{}   // assignedExtraIdx: managed per-component inside Netlist
+            MnaIndex{},   // assignedExtraIdx: managed per-component inside Netlist
+	    netlist.getTemperatureCelsius(),
+            netlist.getThermalVoltage()
         };
 
         try {
@@ -233,7 +249,7 @@ void DCCircuit::runDcSweepAnalysis(const std::string& sourceName, double startVa
             csvI << currentSweepVal;
             csvP << currentSweepVal;
 
-            SimulationContext sweepSimCtx{ state, 0.0, 0 };
+            SimulationContext sweepSimCtx{ state, 0.0, 0, 0.0 };
 
             // Collect telemetry across all components (MOSFET, BJT, FinFET, RibbonFET, GAA-FET)
             netlist.inspectComponents([&state, &sweepSimCtx, &csvV, &csvI, &csvP](const Component& comp, MnaIndex extraIdx) {
@@ -260,7 +276,7 @@ void DCCircuit::runDcSweepAnalysis(const std::string& sourceName, double startVa
                       << " due to convergence breakdown: " << e.what() << std::endl;
         }
 
-        currentSweepVal += stepVal;
+        currentSweepVal += signedStep;
     }
 
     csvV.close();
@@ -269,3 +285,4 @@ void DCCircuit::runDcSweepAnalysis(const std::string& sourceName, double startVa
 
     std::cout << "DC Sweep completed successfully. Matrix datasets committed to CSV." << std::endl;
 }
+

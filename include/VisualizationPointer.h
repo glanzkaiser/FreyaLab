@@ -67,6 +67,12 @@ public:
     std::map<std::string, VisualComponent> visualComponents;
     std::string selectedCompName;
 
+    const char* getActiveSolverBackendName() const {
+        return (netlistPtr && netlistPtr->isUsingKluBackend())
+            ? "BTF + AMD KLU (Sparse Cache)"
+            : "Direct Left-Looking CSR LU";
+    }
+
     int analysisTypeActive = 1; // 1 = Pulse (TR-BDF2), 2 = AC Sweep (Bode)
     float zoomLevel = 1.0f;
     float scrollOffsetX = 0.0f;

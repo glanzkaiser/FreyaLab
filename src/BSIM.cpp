@@ -40,21 +40,24 @@ namespace {
         return out;
     }
 
-    // Helper to construct OSDI v0.4 simulation parameters ($simparam)
+    // Helper to construct OSDI v0.4 simulation parameters ($simparam: gmin & temp in Kelvin)
     struct DefaultOsdiSimParas {
         std::array<char, 5> gminName{'g', 'm', 'i', 'n', '\0'};
-        std::array<char*, 2> names{gminName.data(), nullptr};
-        std::array<double, 1> vals{GMIN_FLOOR};
+        std::array<char, 5> tempName{'t', 'e', 'm', 'p', '\0'};
+        std::array<char*, 3> names{gminName.data(), tempName.data(), nullptr};
+        std::array<double, 2> vals{GMIN_FLOOR, 300.15};
         std::array<char*, 1> emptyStr{nullptr};
         OsdiSimParas paras{};
 
-        DefaultOsdiSimParas() {
+        explicit DefaultOsdiSimParas(double tempCelsius = 27.0) {
+            vals[1]         = tempCelsius + 273.15; // OpenVAF $temperature expects Kelvin
             paras.names     = names.data();
             paras.vals      = vals.data();
             paras.names_str = emptyStr.data();
             paras.vals_str  = emptyStr.data();
         }
     };
+
 
     // Binds OSDI v0.4 resistive & reactive Jacobian double* pointers inside instBuf
     void bindOsdiJacobianSlots(const OsdiDescriptor* desc,
@@ -89,13 +92,17 @@ BsimCmgOsdiLoader& BsimCmgOsdiLoader::getGlobalInstance() {
     static BsimCmgOsdiLoader instance;
     if (!instance.attemptedLoad) {
         instance.attemptedLoad = true;
-        if (!instance.load("usr/include/freyalab/models/bsimcmg.osdi") && !instance.load("bsimcmg.osdi")) {
-            std::cout << "[FreyaLab BSIM] 'models/bsimcmg.osdi' not found. "
+        if (!instance.load("models/bsimcmg.osdi") &&
+            !instance.load("bsimcmg.osdi") &&
+            !instance.load("/usr/include/freyalab/models/bsimcmg.osdi") &&
+            !instance.load("/usr/local/share/freyalab/models/bsimcmg.osdi")) {
+            std::cout << "[FreyaLab BSIM] 'bsimcmg.osdi' not found. "
                       << "Using built-in Phase-1 BSIM-CMG analytical physics engine.\n";
         }
     }
     return instance;
 }
+
 
 bool BsimCmgOsdiLoader::load(const std::string& osdiPath) {
     unload();
@@ -247,7 +254,8 @@ void BsimCmgFet::setupOsdiBuffers() {
         setOsdiParamByName(kv.first, kv.second);
     }
 
-    DefaultOsdiSimParas simEnv;
+    double tempKelvin = params.ambientTempCelsius + 273.15;
+    DefaultOsdiSimParas simEnv(params.ambientTempCelsius);
 
     // 2. Initialize OSDI v0.4 Model
     OsdiInitInfo modelInit{};
@@ -265,10 +273,10 @@ void BsimCmgFet::setupOsdiBuffers() {
         *(nodeMappingPtr + t) = (t < nodes.size() || t == 3) ? t : UINT32_MAX;
     }
 
-        // 4. Initialize OSDI v0.4 Instance & Temperature Setup (300.15 K)
+    // 4. Initialize OSDI v0.4 Instance & Temperature Setup (300.15 K)
     OsdiInitInfo instInit{};
     osdiDesc->setup_instance(nullptr, instanceData.data(), modelData.data(),
-                             300.15, connectedTerms, &simEnv.paras, &instInit);
+                             tempKelvin, connectedTerms, &simEnv.paras, &instInit);
     if (instInit.flags & EVAL_RET_FLAG_FATAL) {
         osdiReady = false;
         return;
@@ -380,7 +388,7 @@ void BsimCmgFet::stamp(MnaMatrixContext& ctx) {
         }
     }
 
-    DefaultOsdiSimParas simEnv;
+    DefaultOsdiSimParas simEnv(params.ambientTempCelsius);
     OsdiSimInfo simInfo{};
     simInfo.paras      = simEnv.paras;
     simInfo.abstime    = ctx.time;
@@ -457,7 +465,8 @@ void BsimCmgFet::updateHistory(const MnaMatrixContext& ctx) {
 
     // Use separate temporary buffer to avoid aliasing prev_state and next_state
     std::vector<double> nextState(osdiDesc->num_states, 0.0);
-    DefaultOsdiSimParas simEnv;
+    DefaultOsdiSimParas simEnv(params.ambientTempCelsius);
+
     OsdiSimInfo simInfo{};
     simInfo.paras      = simEnv.paras;
     simInfo.abstime    = ctx.time;
@@ -508,8 +517,9 @@ void BsimCmgFet::stampAC(CsrMatrixComplex& A_c, std::vector<std::complex<double>
         }
     }
 
-        std::vector<double> dummyState(osdiDesc->num_states, 0.0);
-    DefaultOsdiSimParas simEnv;
+    std::vector<double> dummyState(osdiDesc->num_states, 0.0);
+    DefaultOsdiSimParas simEnv(params.ambientTempCelsius);
+
     OsdiSimInfo simInfo{};
     simInfo.paras      = simEnv.paras;
     simInfo.abstime    = 0.0;
@@ -612,7 +622,7 @@ double BsimCmgFet::calculateCurrent(const SimulationContext& simCtx, MnaIndex ex
         std::vector<uint8_t> modCopy  = modelData;
         std::vector<double> dummyState(osdiDesc->num_states, 0.0);
 
-        DefaultOsdiSimParas simEnv;
+        DefaultOsdiSimParas simEnv(params.ambientTempCelsius);
         OsdiSimInfo simInfo{};
         simInfo.paras      = simEnv.paras;
         simInfo.abstime    = 0.0;
@@ -671,16 +681,39 @@ void BsimCmgFet::setValue(double newVth0) {
     }
 }
 
+void BsimCmgFet::setAmbientTemperature(double tempC) {
+    params.ambientTempCelsius = tempC;
+    if (params.rawOverrides.find("TEMP") == params.rawOverrides.end()) {
+        params.rawOverrides["TEMP"] = tempC;
+    }
+    if (osdiReady) {
+        setupOsdiBuffers();
+    }
+}
+
 // ============================================================================
 // Built-In Phase-1 Analytical Fallback Kernel
 // ============================================================================
 
 void BsimCmgFet::evaluatePhase1Physics(double vgs, double vds,
                                        double& ids, double& gm, double& gds) const {
-    const double Leff = std::max(params.L, 1e-9);
-    const double nVt  = std::max(params.NFACTOR, 1.0) * V_THERMAL_300K;
+    // 1. Temperature scaling (.TEMP) for thermal voltage, mobility, saturation velocity & Vth0
+    constexpr double T0       = 300.15;      // Nominal 27°C in Kelvin
+    constexpr double TCV      = -1.2e-3;     // FinFET threshold temperature coefficient (-1.2 mV/K)
+    constexpr double BEX      = -1.5;        // Phonon mobility temperature exponent
+    constexpr double VSAT_EXP = -0.5;        // Saturation velocity temperature exponent
 
-    const double vth = params.VTH0 - params.DVT0 - params.ETA0 * vds;
+    const double T         = params.ambientTempCelsius + 273.15;
+    const double tempRatio = std::max(T / T0, 0.1);
+    const double vtTemp    = V_THERMAL_300K * tempRatio;
+    const double u0Temp    = params.U0 * std::pow(tempRatio, BEX);
+    const double vsatTemp  = params.VSAT * std::pow(tempRatio, VSAT_EXP);
+    const double vth0Temp  = params.VTH0 + TCV * (T - T0);
+
+    const double Leff = std::max(params.L, 1e-9);
+    const double nVt  = std::max(params.NFACTOR, 1.0) * vtTemp;
+
+    const double vth = vth0Temp - params.DVT0 - params.ETA0 * vds;
     const double dvth_dvds = -params.ETA0;
 
     const double denom_vg = 2.0 * nVt;
@@ -691,7 +724,7 @@ void BsimCmgFet::evaluatePhase1Physics(double vgs, double vds,
     const double dvgsteff_dvgs = dsp_vg;
     const double dvgsteff_dvds = -dsp_vg * dvth_dvds;
 
-    const double esatL = (2.0 * params.VSAT * Leff) / std::max(params.U0, 1e-6);
+    const double esatL = (2.0 * vsatTemp * Leff) / std::max(u0Temp, 1e-6);
     const double sum_vdsat = esatL + vgsteff;
     const double vdsat = (esatL * vgsteff) / sum_vdsat;
     const double dvdsat_dvgsteff = (esatL * esatL) / (sum_vdsat * sum_vdsat);
@@ -707,7 +740,7 @@ void BsimCmgFet::evaluatePhase1Physics(double vgs, double vds,
     const double dvdseff_total_dvgs = dvdseff_dvdsat * (dvdsat_dvgsteff * dvgsteff_dvgs);
     const double dvdseff_total_dvds = dvdseff_dvdsat * (dvdsat_dvgsteff * dvgsteff_dvds) + dvdseff_dvds;
 
-    const double beta_eff = params.U0 * cox * (weff / Leff);
+    const double beta_eff = u0Temp * cox * (weff / Leff);
     const double clm_factor = 1.0 + params.PCLM * (vds - vdseff);
     const double vel_denom = 1.0 + (vdseff / esatL);
 
@@ -733,6 +766,7 @@ void BsimCmgFet::evaluatePhase1Physics(double vgs, double vds,
     if (gm < 0.0) gm = 0.0;
     if (gds < GMIN_FLOOR) gds = GMIN_FLOOR;
 }
+
 
 void BsimCmgFet::stampPhase1(MnaMatrixContext& ctx) {
     if (nodes.size() < 3) return;

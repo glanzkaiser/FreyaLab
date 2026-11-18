@@ -13,11 +13,39 @@ struct SubcircuitBlueprint {
     std::vector<std::vector<std::string>> internalLines; // Raw tokens of child components
 };
 
+struct ModelCardBlueprint {
+    std::string modelName;   // Example: "NFET_01V8", "NFIN_CMG"
+    std::string modelType;   // Example: "NMOS", "PMOS", "BSIMCMG", "NPN", "PNP", "D"
+    std::map<std::string, double> parameters; // Uppercase key=value parameter map
+};
+
 class FileParser {
 private:
     // Maps uppercase netlist string labels (e.g., "GND", "VCC", "NET1") to type-safe 1-based NetNode entities
     std::map<std::string, NetNode> nodeMap;
     int nodeCounter = 0;
+
+    // Stores global variables from .PARAM directives (e.g., VDD -> 1.8, WMIN -> 0.42e-6)
+    std::map<std::string, double> paramRegistry;
+
+    // Stores .MODEL card definitions (e.g., "NFET_01V8" -> ModelCardBlueprint)
+    std::map<std::string, ModelCardBlueprint> modelRegistry;
+
+    // Parses .PARAM and .MODEL directives
+    void parseParamDirective(const std::vector<std::string>& tokens);
+    void parseModelDirective(const std::vector<std::string>& tokens);
+
+    // Evaluates numeric literals OR braced algebraic expressions such as '{2*WMIN + 0.1u}'
+    double evaluateExpression(const std::string& exprStr) const;
+
+    // Applies inherited .MODEL parameters prior to overriding with inline instance parameters
+    void applyModelCardToBsim(const std::string& modelName, BsimCmgParameters& params) const;
+
+        // Recursively expands .INCLUDE and .LIB <file> <corner> directives while merging '+' continuations
+    void collectExpandedLines(const std::string& filepath,
+                              const std::string& targetCorner,
+                              std::vector<std::string>& outLogicalLines,
+                              int depth = 0);
 
     // Tracks registered subcircuit macro structures by uppercase identifiers
     std::map<std::string, SubcircuitBlueprint> subcircuitRegistry;
@@ -26,7 +54,7 @@ private:
     // Records string node names dynamically inside the active netlist workspace
     NetNode getOrAssignNode(const std::string& nodeName, Netlist& netlist);
 
-    double parseValue(const std::string& valStr);
+    double parseValue(const std::string& valStr) const;
     std::vector<NetNode> parseNodes(const std::vector<std::string>& tokens, size_t count);
     // Passes the working netlist reference down to internal node assignment routines
     std::vector<NetNode> parseNodes(const std::vector<std::string>& tokens, size_t count, Netlist& netlist);

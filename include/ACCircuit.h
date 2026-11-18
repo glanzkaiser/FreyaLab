@@ -1,9 +1,9 @@
-// ACCircuit.h
 #pragma once
 #include "Netlist.h"
 #include "CircuitComponents.h"
 #include <complex>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct AcSimulationOptions {
@@ -27,15 +27,32 @@ public:
     // Dynamic component inspection to determine AC capability
     bool isAcCircuit();
 
+    // Automatically scans the circuit topology, extracts Cause and Effect NetNodes,
+    // and maps them as differential measurement pairs relative to Ground (NetNode{0}).
+    void autoGenerateMonitorPairs(std::vector<std::pair<NetNode, NetNode>>& monitorPairs);
+
     // Integrates a single dual-phase nonlinear time slice via Netlist orchestrator
     bool solveTransientStep(MnaMatrixContext& ctx, double targetTime, double currentDt, int stepPhase);
 
-    // Performs complete time integration, logging explicit physical values over type-safe NetNode bounds
+    // Generic TR-BDF2 AC Transient Waveform Analysis with dynamic monitorPairs
+    void runTransientWaveformAnalysis(const AcSimulationOptions& options,
+                                      const std::vector<std::pair<NetNode, NetNode>>& monitorPairs);
+
+    // Convenience overload that auto-discovers Cause/Effect monitorPairs
+    void runTransientWaveformAnalysis(const AcSimulationOptions& options);
+
+    // Backward-compatible overload for explicit (inputNode, outputNode) probing
     void runTransientWaveformAnalysis(const AcSimulationOptions& options,
                                       NetNode inputNode,
                                       NetNode outputNode);
 
-    // Generalized Complex Phasor-Domain Small-Signal Linear Multi-Frequency Solver
+    // Generic Complex Phasor-Domain Small-Signal Linear Multi-Frequency Solver
+    void runFrequencySweepAnalysis(double startFreq,
+                                   double stopFreq,
+                                   int pointsCount,
+                                   const std::vector<std::pair<NetNode, NetNode>>& monitorPairs);
+
+    // Convenience overload that auto-discovers Cause/Effect monitorPairs
     void runFrequencySweepAnalysis(double startFreq, double stopFreq, int pointsCount);
 };
 

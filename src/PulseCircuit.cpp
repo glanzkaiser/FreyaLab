@@ -195,7 +195,7 @@ void PulseCircuit::runPulseTransientAnalysis(const PulseSimulationOptions& optio
     auto& hist_V = netlist.getHistoricV();
     auto& mid_V = netlist.getMidpointV();
 
-    MnaMatrixContext ctx{ G_mat, B_vec, &state_V, &hist_V, &mid_V, t, dt, 0, MnaIndex{} };
+    MnaMatrixContext ctx{ G_mat, B_vec, &state_V, &hist_V, &mid_V, t, dt, 0, MnaIndex{}, netlist.getTemperatureCelsius(), netlist.getThermalVoltage() };
 
     auto calculateVbicCurrents = [&](const std::vector<double>& targetedState, double& ib, double& ic, double& ie) {
         ib = 0.0;
@@ -212,8 +212,8 @@ void PulseCircuit::runPulseTransientAnalysis(const PulseSimulationOptions& optio
                     double vB = getSafeVoltage(targetedState, nB);
                     double vC = getSafeVoltage(targetedState, nC);
                     double vE = getSafeVoltage(targetedState, nE);
-                    double ibe = 1e-16 * (std::exp(std::min((vB - vE) / 0.02585, 40.0)) - 1.0);
-                    double ibbc = 1e-16 * (std::exp(std::min((vB - vC) / 0.02585, 40.0)) - 1.0);
+                    double ibe = 1e-16 * (std::exp(std::min((vB - vE) / netlist.getThermalVoltage(), 40.0)) - 1.0);
+                    double ibbc = 1e-16 * (std::exp(std::min((vB - vC) / netlist.getThermalVoltage(), 40.0)) - 1.0);
                     ib = ibe + ibbc;
                     ic = ibe - ibbc;
                     ie = -(ib + ic);

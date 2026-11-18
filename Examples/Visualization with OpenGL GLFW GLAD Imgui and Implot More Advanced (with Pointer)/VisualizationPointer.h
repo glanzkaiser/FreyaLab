@@ -1,13 +1,12 @@
 #pragma once
 
 #include "freyalab/Netlist.h"
-#include "freyalab/FileParser.h" 
-#include <freyalab/glad/glad.h> // Fixed: Direct inclusion of hardware primitive identifiers
+#include "freyalab/FileParser.h"
 #include <string>
 #include <vector>
 #include <map>
 
-// Defined standard multi-channel 2D vertex footprint matching the OpenGL stream array strides
+// Standard multi-channel 2D vertex footprint
 struct Vertex2D {
     float x, y;
     float r, g, b;
@@ -35,10 +34,10 @@ enum class StimulusType {
 
 class FreyaLabVisualizer {
 public:
-    // Constructor 1: Optimized for pointer-binding frameworks (Visualization.cpp)
+    // Constructor 1: Pointer-binding framework
     explicit FreyaLabVisualizer(Netlist* netlistInstance);
     
-    // Constructor 2: Standard fallback initialization reference wrapper
+    // Constructor 2: Reference wrapper overload
     explicit FreyaLabVisualizer(Netlist& netlistInstance);
 
     ~FreyaLabVisualizer() = default;
@@ -53,11 +52,9 @@ public:
     void synchronizeVisualsFromNetlist();
     void regenerateNetlistTextFromVisuals();
     
-    // Accessor required by main.cpp file layer boot sequences
-    void setRawNetlistBuffer(const std::string& content) { rawNetlistBuffer = content; }
-    
-    void handleCanvasInteraction(float mouseX, float yMouse, int viewW, int viewH, 
-                                 bool isClick, bool isDragging, float dragDx, float dragDy);
+    void handleCanvasInteraction(float /*mouseX*/, float /*yMouse*/, int /*viewW*/, int /*viewH*/, 
+                                 bool /*isClick*/, bool /*isDragging*/, float /*dragDx*/, float /*dragDy*/) {}
+    void renderDashboardGUI() {}
 
 public:
     // ========================================================================
@@ -70,17 +67,34 @@ public:
     std::map<std::string, VisualComponent> visualComponents;
     std::string selectedCompName;
 
-    int analysisTypeActive = 1; // 1 = Pulse/Digital table, 2 = AC Sweep
+    const char* getActiveSolverBackendName() const {
+        return (netlistPtr && netlistPtr->isUsingKluBackend())
+            ? "BTF + AMD KLU (Sparse Cache)"
+            : "Direct Left-Looking CSR LU";
+    }
+
+    int analysisTypeActive = 1; // 1 = Pulse (TR-BDF2), 2 = AC Sweep (Bode)
     float zoomLevel = 1.0f;
     float scrollOffsetX = 0.0f;
     float scrollOffsetY = 0.0f;
 
-    // --- Interactive Vector Backing Stores (ImPlot / ImGui Grid Backends) ---
+    // --- Interactive Vector Backing Stores (ImPlot Backends) ---
     std::vector<double> plotTimeSteps;
     std::vector<double> plotInputWaveform;
     std::vector<double> plotOutputWaveform;
     std::vector<double> plotFrequencies;
     std::vector<double> plotBodeMagnitudeDb;
+    std::vector<double> plotNyquistReal;
+    std::vector<double> plotNyquistImag;
+
+    // --- Complex Power & Power Factor Metrics (Tabs 9 & 10) ---
+    double plotActivePowerP = 0.0;
+    double plotReactivePowerQ = 0.0;
+    double plotApparentPowerS = 0.0;
+    double plotPowerFactor = 1.0;
+
+private:
+    void buildSchematicGeometry(const Netlist& /*targetNetlist*/, std::vector<Vertex2D>& /*geometryVertices*/) {}
 
 private:
     // ========================================================================
@@ -88,13 +102,13 @@ private:
     // ========================================================================
     StimulusType activeStimulus = StimulusType::DC_SINGLE; 
     
-    // Dynamic tracking cells for user parameter updates matching double precision layout sizes
-    double stimDcVolt = 5.0;       
-    double stimAcMag = 1.0;        
-    double stimAcPhase = 0.0;      
-    double stimPulseLow = 0.0;     
-    double stimPulseHigh = 5.0;    
-    double stimPulseWidth = 10e-6;  
-    double stimPulsePeriod = 20e-6; 
+    // Dynamic tracking cells for user parameter updates inside ImGui controls
+    float stimDcVolt = 5.0f;       
+    float stimAcMag = 1.0f;        
+    float stimAcPhase = 0.0f;      
+    float stimPulseLow = 0.0f;     
+    float stimPulseHigh = 5.0f;    
+    float stimPulseWidth = 10.0f;   // Dalam mikrodetik (10 us) agar cocok dengan slider ImGui
+    float stimPulsePeriod = 20.0f;  // Dalam mikrodetik (20 us) agar cocok dengan slider ImGui
 };
 

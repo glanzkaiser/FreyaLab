@@ -45,6 +45,9 @@ struct BsimCmgParameters {
     double CGS0    = 0.4e-15; // Gate-to-Source capacitance per fin/sheet (F)
     double CGD0    = 0.4e-15; // Gate-to-Drain capacitance per fin/sheet (F)
 
+    // Ambient operating temperature in Celsius (default SPICE nominal = 27.0 C)
+    double ambientTempCelsius = 27.0;
+
     // Raw key=value map forwarded directly to BSIM-CMG 112.1.0 OSDI parameters
     std::map<std::string, double> rawOverrides;
 };
@@ -136,5 +139,6 @@ public:
 
     double getValue() const override { return params.VTH0; }
     void setValue(double newVth0) override;
+    void setAmbientTemperature(double tempC);
 };
 

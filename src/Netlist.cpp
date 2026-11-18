@@ -1,4 +1,4 @@
-
+#include "freyalab/KLU.h"
 #include "freyalab/Netlist.h"
 #include "freyalab/CircuitComponents.h"
 #include <algorithm>
@@ -228,6 +228,16 @@ void Netlist::buildSparsityPattern() {
     stateV.assign(totalSize, 0.0);
     historicV.assign(totalSize, 0.0);
     midpointV.assign(totalSize, 0.0);
+
+    // 6. Adaptive Solver Selection: Activate cached BTF + AMD KLU for large VLSI circuits
+    if (totalSize >= KluSolver::KLU_ACTIVATION_THRESHOLD) {
+        useKluBackend = true;
+        kluCache = KluSolver::analyzeSymbolic(G);
+    } else {
+        useKluBackend = false;
+        kluCache = KluSymbolicContext{};
+    }
+
 }
 
 void Netlist::inspectComponents(std::function<void(const Component&, MnaIndex extraIdx)> callback) const {
@@ -242,22 +252,21 @@ bool Netlist::runNewtonRaphson(MnaMatrixContext& ctx, int maxIter, double relTol
     std::vector<double> iterV = stateV;       // Seed guess from current system state vector
     std::vector<double> prevIterV = stateV;   // Prior iteration guess tracker for pnjlim references
 
-    // Allocate matrix workspaces outside the loop to maximize execution pipeline speed
+    // Allocate direct CSR L/U workspaces ONLY for small circuits (< 300 equations)
     CsrMatrix L, U;
     std::vector<int> P;
-
-    L.initializeFromPattern(G);
-    U.initializeFromPattern(G);
+    if (!useKluBackend) {
+        L.initializeFromPattern(G);
+        U.initializeFromPattern(G);
+        P.resize(totalSize, 0);
+    }
 
     for (int iter = 0; iter < maxIter; ++iter) {
         G.zero();
         std::fill(B.begin(), B.end(), 0.0);
 
-        P.clear();
-        P.resize(totalSize, 0);
-
         ctx.currentIterV = &iterV;
-        ctx.historicStepV = &prevIterV;
+        ctx.historicStepV = (ctx.orderStep == 0) ? &prevIterV : &historicV;
 
         // 1. Device Physics Stamping Pass (passing strongly-typed MnaIndex)
         for (auto& comp : components) {
@@ -272,13 +281,21 @@ bool Netlist::runNewtonRaphson(MnaMatrixContext& ctx, int maxIter, double relTol
             G.addValue(i, i, 1e-12);
         }
 
-        // 3. Factorize the system matrix using the pre-allocated L and U maps
-        if (!CircuitMath::luFactorize(G, L, U, P)) {
-            return false; // Matrix structural singularity hit
+        // 3 & 4. Adaptive Linear Solve: Cached BTF+AMD KLU vs Direct CSR LU
+        std::vector<double> solvedV;
+        if (useKluBackend) {
+            if (!KluSolver::factorizeNumeric(G, kluCache)) {
+                return false; // Matrix structural singularity hit
+            }
+            solvedV = KluSolver::solveNumeric(kluCache, B);
+        } else {
+            P.assign(totalSize, 0);
+            if (!CircuitMath::luFactorize(G, L, U, P)) {
+                return false; // Matrix structural singularity hit
+            }
+            solvedV = CircuitMath::luSolve(L, U, P, B);
         }
 
-        // 4. Resolve absolute new system voltage vector via LU back-substitution
-        std::vector<double> solvedV = CircuitMath::luSolve(L, U, P, B);
         if (solvedV.size() != static_cast<size_t>(totalSize)) {
             return false;
         }
@@ -306,14 +323,20 @@ bool Netlist::runNewtonRaphson(MnaMatrixContext& ctx, int maxIter, double relTol
             }
         }
 
-        if (converged) {
+            if (converged) {
             stateV = iterV; // Commit successful convergence globally
+            ctx.currentIterV = &stateV;
+            ctx.historicStepV = &historicV;
             return true;
         }
     }
 
+    ctx.currentIterV = &stateV;
+    ctx.historicStepV = &historicV;
     return false; // Loop exceeded max iterations without converging
 }
+
+
 
 // mathematically correct and robust 
 double Netlist::estimateLocalTruncationError(double dt, double gamma, double relTol, double absTol) {
@@ -511,6 +534,3 @@ void Netlist::simulate(const NetlistSimulationOptions& options) {
     }
     std::cout << "[SOLVER] Transient simulation successfully completed." << std::endl;
 }
-
-
-

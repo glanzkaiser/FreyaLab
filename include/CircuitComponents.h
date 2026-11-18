@@ -87,7 +87,10 @@ enum class ComponentType {
     RESISTOR, VOLTAGE_SOURCE, CURRENT_SOURCE, CAPACITOR, INDUCTOR, 
     DIODE, BJT, MOSFET, IGBT, DARLINGTON, FINFET, RIBBONFET, GAA_FET, 
     THYRISTOR_DEVICE, ANALOG_IC, DIGITAL_IC, AC_SOURCE_DEVICE, 
-    PROTECTION_DEVICE, ELECTROMECHANICAL, PWM_CONTROLLER 
+    PROTECTION_DEVICE, ELECTROMECHANICAL, PWM_CONTROLLER,
+    VCVS,
+    VCCS,
+    BEHAVIORAL_SOURCE
 };
 
 // Specialized Groupings for physics and behavioral dispatch
@@ -116,12 +119,17 @@ struct MnaMatrixContext {
     double dt = 1e-6;
     int orderStep = 0;                        // 0 = Static DC, 1 = TR Midpoint, 2 = BDF2 Step Phase
     MnaIndex assignedExtraIdx{};              // Default invalid (-1)
+
+    // Global SPICE .TEMP registers (Default: 27.0 C = 300.15 K, VT ~ 25.85 mV)
+    double ambientTempCelsius = 27.0;
+    double thermalVoltage = 0.02585199;
 };
 
 struct SimulationContext {
     const std::vector<double>& state;
     double dt = 0.0;
     int orderStep = 0; // 0 = DC Operating Point, 1 = TR Midpoint, 2 = BDF2 Step Phase
+    double time = 0.0;
 };
 
 // Base Component Interface
@@ -340,6 +348,17 @@ class VoltageSource : public Component {
     double value;
     double acMagnitude = 1.0;
     double acPhase = 0.0;
+
+    // Transient PULSE(V1 V2 TD TR TF PW PER) waveform registers
+    bool isPulse = false;
+    double pulseV1 = 0.0;
+    double pulseV2 = 0.0;
+    double pulseTd = 0.0;
+    double pulseTr = 1e-12;
+    double pulseTf = 1e-12;
+    double pulsePw = 10e-6;
+    double pulsePer = 20e-6;
+
 public:
     VoltageSource(const std::string& name, const std::vector<NetNode>& nodes, double v);
     int getExtraRowRequirement() const override { return 1; }
@@ -354,8 +373,20 @@ public:
                  double omega, const std::vector<double>& dcState) override;
     double getValue() const override { return value; }
     void setAcParameters(double mag, double phase);
+    void setPulseParameters(double v1, double v2, double td, double tr, double tf, double pw, double per) {
+        isPulse  = true;
+        pulseV1  = v1;
+        pulseV2  = v2;
+        pulseTd  = td;
+        pulseTr  = (tr > 1e-15) ? tr : 1e-15;
+        pulseTf  = (tf > 1e-15) ? tf : 1e-15;
+        pulsePw  = pw;
+        pulsePer = (per > 1e-15) ? per : 1e-15;
+        value    = v1; // DC operating point at t = 0 starts at V1
+    }
     void setValue(double newValue) override { value = newValue; }
 };
+
 
 class BehaviorLogicGateComponent : public Component {
 private:

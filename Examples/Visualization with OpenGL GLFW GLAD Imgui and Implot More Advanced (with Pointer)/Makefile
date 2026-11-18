@@ -3,8 +3,9 @@
 # ============================================================================
 CXX      := g++
 CC       := gcc
-CXXFLAGS := -std=c++17 -Wall -Wextra -O2
-CFLAGS   := -O2
+CXXFLAGS := -std=c++17 -O2 -g -fsanitize=address -fno-omit-frame-pointer -Wall -Wextra
+CFLAGS   := -O2 -g -fsanitize=address -fno-omit-frame-pointer
+LDFLAGS  := -fsanitize=address
 TARGET   := freyalab_dashboard
 
 # Build artifact output directories
@@ -17,7 +18,7 @@ FREYALAB_DIR := ./freyalab
 # Include path directives
 INCLUDES := -I. \
             -I$(FREYALAB_DIR) \
-            -I$(GLAD_DIR) \
+            -I$(GLAD_DIR)
 
 # ============================================================================
 # OS SPECIFIC LINKER FLAGS DETECTION (Linux & macOS)
@@ -25,10 +26,10 @@ INCLUDES := -I. \
 UNAME_S := $(shell uname -s)
 
 ifeq ($(UNAME_S), Linux)
-    LIBS := -lfreyalab -limplot -limgui -lglfw -lGL -ldl -lpthread
+    LIBS := -lfreyalab -limgui -limplot -lglfw -lGL -ldl -lpthread
 endif
 ifeq ($(UNAME_S), Darwin) # macOS
-    LIBS := -lglfw -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo
+    LIBS := -lfreyalab -limgui -limplot -lglfw -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo
     CXXFLAGS += -D__APPLE__
 endif
 
@@ -39,8 +40,7 @@ endif
 APP_SOURCES := main.cpp Visualization.cpp
 
 # External Dependency Source Files
-GLAD_SOURCES  := $(GLAD_DIR)/glad.c
-
+GLAD_SOURCES := $(GLAD_DIR)/glad.c
 
 # ============================================================================
 # OBJECT FILE GENERATION MAPPING
@@ -55,9 +55,9 @@ all: $(TARGET)
 
 # Main Executable Linkage Stage
 $(TARGET): $(OBJECTS)
-	@echo "🔗 Linking system objects into target binary: $(TARGET)..."
-	$(CXX) $(CXXFLAGS) $(OBJECTS) -o $(TARGET) $(LIBS)
-	@echo "✨ Build fully operational and complete."
+	@echo "Linking system objects into target binary: $(TARGET)..."
+	$(CXX) $(LDFLAGS) $(OBJECTS) -o $(TARGET) $(LIBS)
+	@echo "Build fully operational and complete."
 
 # Rule: Compile Application Sources
 $(OBJ_DIR)/%.o: %.cpp
@@ -71,7 +71,7 @@ $(OBJ_DIR)/glad/glad.o: $(GLAD_SOURCES)
 
 # Housekeeping Cleanup Pipelines
 clean:
-	@echo " Cleaning workspace object buffers..."
+	@echo "Cleaning workspace object buffers..."
 	rm -rf $(OBJ_DIR) $(TARGET)
 
 .PHONY: all clean

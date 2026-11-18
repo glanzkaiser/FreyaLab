@@ -1,0 +1,1 @@
+g++ -g -fsanitize=address -fno-omit-frame-pointer main.cpp Visualization.cpp -lfreyalab -limgui -limplot -lglfw -lGL -ldl -lpthread glad/glad.c -o freyalab
