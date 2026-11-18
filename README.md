@@ -103,6 +103,6 @@ Mixed-signal example:
 * [x] **KLU Sparse Solver Backend:** BTF decomposition + AMD ordering for 10,000+ node netlists
 * [ ] Multi-threaded C++17 `std::thread` pool for parallel BSIM-CMG evaluation & BTF block factorization
 * [x] `.PARAM` algebraic expression evaluator, add `.INCLUDE`, `.LIB`, `.MODEL`,`.NOISE`, and `.TEMP` 
-* [ ] `.PARAM` algebraic expression evaluator & Monte Carlo corner sweeps
+* [ ] Monte Carlo corner sweeps
 * [ ] **Memristor & Neuromorphic Crossbar Simulation:** Nonlinear VTEAM/Yakopcic memristor models
 
