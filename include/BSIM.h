@@ -97,6 +97,12 @@ private:
     std::vector<double> stateHistN;       // Converged OSDI internal states at step n
     std::vector<double> stateHistNc;      // Converged OSDI internal states at TR midpoint n+gamma
     std::vector<double> stateCheckpoint;
+
+    std::vector<double> qHistN;           // Q_n at t_n
+    std::vector<double> qHistNc;          // Q_{n+gamma} at midpoint TR
+    std::vector<double> iCapHistN;        // I_{cap, n} at t_n
+    std::vector<double> qHistNCheckpoint;
+    std::vector<double> iCapHistNCheckpoint;
     bool osdiReady = false;
 
     void setupOsdiBuffers();

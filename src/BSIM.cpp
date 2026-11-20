@@ -297,6 +297,12 @@ void BsimCmgFet::setupOsdiBuffers() {
     stateHistNc.assign(osdiDesc->num_states, 0.0);
     stateCheckpoint.assign(osdiDesc->num_states, 0.0);
 
+    qHistN.assign(osdiDesc->num_nodes, 0.0);
+    qHistNc.assign(osdiDesc->num_nodes, 0.0);
+    iCapHistN.assign(osdiDesc->num_nodes, 0.0);
+    qHistNCheckpoint.assign(osdiDesc->num_nodes, 0.0);
+    iCapHistNCheckpoint.assign(osdiDesc->num_nodes, 0.0);
+
     osdiReady = true;
 }
 
@@ -427,26 +433,42 @@ void BsimCmgFet::stamp(MnaMatrixContext& ctx) {
 
     // Load KCL Residuals & Linearized Newton-Raphson RHS Vector into ctx.B
     std::vector<double> resistRhs(totalNodes, 0.0);
-    std::vector<double> reactRhs(totalNodes, 0.0);
+    std::vector<double> qCurr(totalNodes, 0.0);
     osdiDesc->load_residual_resist(instanceData.data(), modelData.data(), resistRhs.data());
     if (ctx.orderStep > 0) {
-        osdiDesc->load_residual_react(instanceData.data(), modelData.data(), reactRhs.data());
+        osdiDesc->load_residual_react(instanceData.data(), modelData.data(), qCurr.data());
     }
+
+    // Step 1 (TR Midpoint): I_cap = alpha * (Q^(k) - Q_n) - I_{cap, n}
+    // Step 2 (BDF2):        I_cap = alpha * (Q^(k) - w_nc * Q_{n+gamma} + w_n * Q_n)
+    constexpr double W_NC = 1.0 / (TR_GAMMA * (2.0 - TR_GAMMA));
+    constexpr double W_N  = ((1.0 - TR_GAMMA) * (1.0 - TR_GAMMA)) / (TR_GAMMA * (2.0 - TR_GAMMA));
 
     for (uint32_t n = 0; n < totalNodes; ++n) {
+        if (n >= numTerms && *(collapsed + n)) continue;
         MnaIndex row = resolveMnaRowIndex(n, ctx.assignedExtraIdx);
-        if (row.isValid()) {
-            double fNode = resistRhs.at(n) + ((ctx.orderStep > 0) ? reactRhs.at(n) : 0.0);
-            addSafeRhs(ctx.B, row, -fNode);
+        if (!row.isValid()) continue;
+
+        double iCap = 0.0;
+        if (ctx.orderStep == 1) {
+            const double qn = (n < qHistN.size()) ? qHistN.at(n) : 0.0;
+            const double in = (n < iCapHistN.size()) ? iCapHistN.at(n) : 0.0;
+            iCap = alpha * (qCurr.at(n) - qn) - in;
+        } else if (ctx.orderStep == 2) {
+            const double qnc = (n < qHistNc.size()) ? qHistNc.at(n) : 0.0;
+            const double qn  = (n < qHistN.size()) ? qHistN.at(n) : 0.0;
+            iCap = alpha * (qCurr.at(n) - W_NC * qnc + W_N * qn);
         }
+
+        const double fNode = resistRhs.at(n) + iCap;
+        addSafeRhs(ctx.B, row, -fNode);
     }
 
-    // Add J * V_k linearization term to RHS
+    // Add J * V_k linearization term to RHS 
     for (uint32_t e = 0; e < osdiDesc->num_jacobian_entries; ++e) {
         const OsdiJacobianEntry& entry = *(osdiDesc->jacobian_entries + e);
         MnaIndex row = resolveMnaRowIndex(entry.nodes.node_1, ctx.assignedExtraIdx);
-        MnaIndex col = resolveMnaRowIndex(entry.nodes.node_2, ctx.assignedExtraIdx);
-        if (row.isValid() && col.isValid() && entry.nodes.node_2 < totalNodes) {
+        if (row.isValid() && entry.nodes.node_2 < totalNodes) {
             double gVal = resistJac.at(e) + ((ctx.orderStep > 0) ? reactJac.at(e) : 0.0);
             addSafeRhs(ctx.B, row, gVal * prevSolve.at(entry.nodes.node_2));
         }
@@ -471,15 +493,44 @@ void BsimCmgFet::updateHistory(const MnaMatrixContext& ctx) {
     simInfo.paras      = simEnv.paras;
     simInfo.abstime    = ctx.time;
     simInfo.prev_solve = convergedV.data();
-    simInfo.prev_state = stateHistN.data();
+    simInfo.prev_state = (ctx.orderStep == 2) ? stateHistNc.data() : stateHistN.data();
     simInfo.next_state = nextState.data();
     simInfo.flags      = ((ctx.orderStep == 0) ? ANALYSIS_DC : ANALYSIS_TRAN) | CALC_REACT_RESIDUAL;
 
     osdiDesc->eval(nullptr, instanceData.data(), modelData.data(), &simInfo);
 
-    if (ctx.orderStep == 1) {
+    // Evaluasi muatan Q(V_converged) untuk disimpan ke riwayat langkah berikutnya
+    std::vector<double> qConverged(totalNodes, 0.0);
+    if (osdiDesc->load_residual_react) {
+        osdiDesc->load_residual_react(instanceData.data(), modelData.data(), qConverged.data());
+    }
+
+    if (ctx.orderStep == 0) {
+        // DC Operating Point: Q_0 = Q(V_dc), I_{cap, 0} = 0
+        qHistN  = qConverged;
+        qHistNc = qConverged;
+        std::fill(iCapHistN.begin(), iCapHistN.end(), 0.0);
+        stateHistN  = nextState;
+        stateHistNc = std::move(nextState);
+    } else if (ctx.orderStep == 1) {
+        // Akhir sub-langkah 1 (TR Midpoint): simpan Q_{n+gamma} dan state_{n+gamma}
+        qHistNc     = std::move(qConverged);
         stateHistNc = std::move(nextState);
     } else {
+        // Akhir sub-langkah 2 (BDF2 pada t_{n+1}): hitung I_{cap, n+1} sebelum menimpa qHistN
+        const double dt2   = std::max((1.0 - TR_GAMMA) * ctx.dt, 1e-18);
+        const double alpha = (2.0 - TR_GAMMA) / ((1.0 - TR_GAMMA) * dt2);
+        constexpr double W_NC = 1.0 / (TR_GAMMA * (2.0 - TR_GAMMA));
+        constexpr double W_N  = ((1.0 - TR_GAMMA) * (1.0 - TR_GAMMA)) / (TR_GAMMA * (2.0 - TR_GAMMA));
+
+        iCapHistN.resize(totalNodes, 0.0);
+        for (uint32_t n = 0; n < totalNodes; ++n) {
+            const double qnc = (n < qHistNc.size()) ? qHistNc.at(n) : 0.0;
+            const double qn  = (n < qHistN.size()) ? qHistN.at(n) : 0.0;
+            iCapHistN.at(n)  = alpha * (qConverged.at(n) - W_NC * qnc + W_N * qn);
+        }
+
+        qHistN     = std::move(qConverged);
         stateHistN = std::move(nextState);
     }
 }
@@ -664,14 +715,21 @@ double BsimCmgFet::calculateCurrent(const SimulationContext& simCtx, MnaIndex ex
 void BsimCmgFet::resetState() {
     std::fill(stateHistN.begin(), stateHistN.end(), 0.0);
     std::fill(stateHistNc.begin(), stateHistNc.end(), 0.0);
+    std::fill(qHistN.begin(), qHistN.end(), 0.0);
+    std::fill(qHistNc.begin(), qHistNc.end(), 0.0);
+    std::fill(iCapHistN.begin(), iCapHistN.end(), 0.0);
 }
 
 void BsimCmgFet::saveCheckpoint() {
-    stateCheckpoint = stateHistN;
+    stateCheckpoint     = stateHistN;
+    qHistNCheckpoint    = qHistN;
+    iCapHistNCheckpoint = iCapHistN;
 }
 
 void BsimCmgFet::restoreCheckpoint() {
     stateHistN = stateCheckpoint;
+    qHistN     = qHistNCheckpoint;
+    iCapHistN  = iCapHistNCheckpoint;
 }
 
 void BsimCmgFet::setValue(double newVth0) {
@@ -867,6 +925,5 @@ void BsimCmgFet::stampACPhase1(CsrMatrixComplex& A_c, double omega, const std::v
         if (mG.isValid()) A_c.addValue(mS.idx, mG.idx, std::complex<double>(-gm, 0.0) - y_gs);
     }
 }
-
 
 
