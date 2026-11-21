@@ -139,8 +139,20 @@ protected:
     ComponentType type;
     std::vector<NetNode> nodes;
     MnaIndex assignedExtraRowIdx{};
-
+    double localJunctionTempC = -1000.0; // < 0 means use global netlist ambient temperature
 public:
+    void setLocalJunctionTempC(double tempC) { localJunctionTempC = tempC; }
+    void clearLocalJunctionTempC() { localJunctionTempC = -1000.0; }
+    double getEffectiveTempC(double globalTempC) const {
+        return (localJunctionTempC > -273.15) ? localJunctionTempC : globalTempC;
+    }
+    double getEffectiveThermalVoltage(double globalVt) const {
+        if (localJunctionTempC <= -273.15) return globalVt;
+        constexpr double kB = 1.380649e-23;
+        constexpr double q  = 1.602176634e-19;
+        return (kB * (localJunctionTempC + 273.15)) / q;
+    }
+
     Component(const std::string& name, ComponentType type, const std::vector<NetNode>& nodes)
         : name(name), type(type), nodes(nodes) {}
 
@@ -191,6 +203,7 @@ public:
 // Primitives Declarations
 class Resistor : public Component {
     double value;
+    double tc1 = 0.0; // Linear temperature coefficient [1/K] (e.g., 3.9e-3 for Cu interconnects)
 public:
     Resistor(const std::string& name, const std::vector<NetNode>& nodes, double r);
     void stamp(MnaMatrixContext& ctx) override;
@@ -204,6 +217,8 @@ public:
 
     void setValue(double newValue) override { value = newValue; }
     double getValue() const override { return value; }
+    void setTc1(double coeff) { tc1 = coeff; }
+    double getTc1() const { return tc1; }
 };
 
 class Diode : public Component {
@@ -350,7 +365,7 @@ class VoltageSource : public Component {
     double acPhase = 0.0;
 
     // Transient PULSE(V1 V2 TD TR TF PW PER) waveform registers
-    bool isPulse = false;
+    
     double pulseV1 = 0.0;
     double pulseV2 = 0.0;
     double pulseTd = 0.0;
@@ -360,6 +375,7 @@ class VoltageSource : public Component {
     double pulsePer = 20e-6;
 
 public:
+    bool isPulse = false;
     VoltageSource(const std::string& name, const std::vector<NetNode>& nodes, double v);
     int getExtraRowRequirement() const override { return 1; }
     void allocateRows(int& globalExtraRowCounter) override;

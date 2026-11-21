@@ -20,15 +20,21 @@ Resistor::Resistor(const std::string& name, const std::vector<NetNode>& nodes, d
 void Resistor::stamp(MnaMatrixContext& ctx) {
     if (nodes.size() < 2) return;
 
-    // 1. Division-by-zero safety clamping factor
-    double safe_value = (std::abs(value) > 1e-20) ? value : 1e-20;
+    // 1. Local Electro-Thermal resistance scaling R(T) = R0 * [1 + TC1 * (T - T0)]
+    constexpr double T0 = 300.15;
+    double T = getEffectiveTempC(ctx.ambientTempCelsius) + 273.15;
+    double tempFactor = std::max(0.1, 1.0 + tc1 * (T - T0));
+    double rEff = value * tempFactor;
+
+    // 2. Division-by-zero safety clamping factor
+    double safe_value = (std::abs(rEff) > 1e-20) ? rEff : 1e-20;
     double g = 1.0 / safe_value;
 
-    // 2. Translate 1-based NetNodes into 0-based MnaIndices (Ground automatically becomes invalid)
+    // 3. Translate 1-based NetNodes into 0-based MnaIndices (Ground automatically becomes invalid)
     MnaIndex m1 = MnaIndex::fromNetNode(nodes[0]);
     MnaIndex m2 = MnaIndex::fromNetNode(nodes[1]);
 
-    // 3. Inject conductance stencil with compile-time type safety
+    // 4. Inject conductance stencil with compile-time type safety
     if (m1.isValid()) ctx.G.addValue(m1.idx, m1.idx,  g);
     if (m2.isValid()) ctx.G.addValue(m2.idx, m2.idx,  g);
 
@@ -100,7 +106,12 @@ double Resistor::calculateCurrent(const SimulationContext& simCtx, MnaIndex extr
     }
 
     // 2. Spatial Algebraic Path: Calculate instantaneously via Ohm's Law (I = V_drop / R)
-    double safeValue = (std::abs(value) > 1e-20) ? value : 1e-20;
+    constexpr double T0 = 300.15;
+    double T = getEffectiveTempC(27.0) + 273.15;
+    double tempFactor = std::max(0.1, 1.0 + tc1 * (T - T0));
+    double rEff = value * tempFactor;
+
+    double safeValue = (std::abs(rEff) > 1e-20) ? rEff : 1e-20;
     double v_drop = calculateVoltageDrop(simCtx.state);
     return v_drop / safeValue;
 }
@@ -128,14 +139,15 @@ void Diode::stamp(MnaMatrixContext& ctx) {
     if (ctx.historicStepV) {
         vold = getSafeVoltage(ctx.historicStepV, n1) - getSafeVoltage(ctx.historicStepV, n2);
     }
-
-    // 2. Temperature scaling for thermal voltage (kT/q) and saturation current Is(T)
+ 
+    // 2. Local Electro-Thermal temperature scaling for thermal voltage (kT/q) and saturation current Is(T)
     constexpr double T0 = 300.15;       // Nominal 27°C in Kelvin
     constexpr double EG_SI = 1.11;      // Silicon bandgap energy (eV)
     constexpr double XTI = 3.0;         // Saturation current temperature exponent
 
-    double vtBase = (ctx.thermalVoltage > 1e-6) ? ctx.thermalVoltage : V_THERMAL_300K;
-    double T = ctx.ambientTempCelsius + 273.15;
+    double globalVt = (ctx.thermalVoltage > 1e-6) ? ctx.thermalVoltage : V_THERMAL_300K;
+    double vtBase = getEffectiveThermalVoltage(globalVt);
+    double T = getEffectiveTempC(ctx.ambientTempCelsius) + 273.15;
     double tempRatio = std::max(T / T0, 0.1);
 
     double isTemp = Is * std::pow(tempRatio, XTI / N) *
@@ -257,19 +269,32 @@ double Diode::calculateCurrent(const SimulationContext& simCtx, MnaIndex extraId
     }
 
     double vd = calculateVoltageDrop(simCtx.state);
-    double safeIs = std::max(Is, 1e-20);
-    double vt = N * V_THERMAL_300K;
 
-    // 1. Analytical SPICE Voltage Clamping Layer (Prevents numeric floating-point overflow)
+    // 1. Local Electro-Thermal temperature scaling matching Diode::stamp()
+    constexpr double T0 = 300.15;       // Nominal 27°C in Kelvin
+    constexpr double EG_SI = 1.11;      // Silicon bandgap energy (eV)
+    constexpr double XTI = 3.0;         // Saturation current temperature exponent
+
+    double vtBase = getEffectiveThermalVoltage(V_THERMAL_300K);
+    double T = getEffectiveTempC(27.0) + 273.15;
+    double tempRatio = std::max(T / T0, 0.1);
+
+    double isTemp = Is * std::pow(tempRatio, XTI / N) *
+                    std::exp((EG_SI / (N * V_THERMAL_300K)) - (EG_SI / (N * vtBase)));
+
+    double safeIs = std::max(isTemp, 1e-20);
+    double vt = N * vtBase;
+
+    // 2. Analytical SPICE Voltage Clamping Layer (Prevents numeric floating-point overflow)
     double vcrit = vt * std::log(vt / (std::sqrt(2.0) * safeIs));
     if (vd > vcrit) {
         vd = vcrit + (vd - vcrit) / (1.0 + (vd - vcrit) / vt);
     }
 
-    // 2. Core Shockley Equation evaluation with numerical exponent bounding
+    // 3. Core Shockley Equation evaluation with numerical exponent bounding
     double id = safeIs * (std::exp(std::min(vd / vt, 40.0)) - 1.0);
 
-    // 3. Parallel Gmin conductance baseline injection to match the linear matrix stamp() exactly
+    // 4. Parallel Gmin conductance baseline injection to match the linear matrix stamp() exactly
     constexpr double gmin = 1e-12;
     id += gmin * vd;
 
@@ -712,7 +737,7 @@ void Mosfet::stamp(MnaMatrixContext& ctx) {
     constexpr double TCV = -1.5e-3;     // Threshold temperature coefficient (-1.5 mV/K)
     constexpr double BEX = -1.5;        // Mobility temperature exponent
 
-    double T = ctx.ambientTempCelsius + 273.15;
+    double T = getEffectiveTempC(ctx.ambientTempCelsius) + 273.15;
     double tempRatio = std::max(T / T0, 0.1);
     double betaTemp  = beta * std::pow(tempRatio, BEX);
     double vt0Temp   = std::max(0.05, vt0 + TCV * (T - T0));
@@ -879,15 +904,25 @@ double Mosfet::calculateCurrent(const SimulationContext& simCtx, MnaIndex extraI
     vG *= pol;
     vS *= pol;
 
+    // 3. Local Electro-Thermal scaling matching Mosfet::stamp()
+    constexpr double T0  = 300.15;      // Nominal 27°C in Kelvin
+    constexpr double TCV = -1.5e-3;     // Threshold temperature coefficient (-1.5 mV/K)
+    constexpr double BEX = -1.5;        // Mobility temperature exponent
+
+    double T = getEffectiveTempC(27.0) + 273.15;
+    double tempRatio = std::max(T / T0, 0.1);
+    double betaTemp  = beta * std::pow(tempRatio, BEX);
+    double vt0Temp   = std::max(0.05, vt0 + TCV * (T - T0));
+
     bool reversedCurrent = !isNChannel;
 
-    // 3. Handle symmetric bidirectional drain-source swapping
+    // 4. Handle symmetric bidirectional drain-source swapping
     if ((vD - vS) < 0.0) {
         std::swap(vD, vS);
         reversedCurrent = !reversedCurrent;
     }
 
-    // 4. Compute localized Shichman-Hodges operating parameters
+    // 5. Compute localized Shichman-Hodges operating parameters
     double vgs = vG - vS;
     double vds = vD - vS;
     double vov = vgs - vt0;
@@ -979,8 +1014,9 @@ void VbicBjtAdvanced::stamp(MnaMatrixContext& ctx) {
     constexpr double XTI   = 3.0;         // Saturation current temperature exponent
     constexpr double XTB   = 1.5;         // Forward/reverse beta temperature exponent
 
-    double vtBase = (ctx.thermalVoltage > 1e-6) ? ctx.thermalVoltage : V_THERMAL_300K;
-    double T = ctx.ambientTempCelsius + 273.15;
+    double globalVt = (ctx.thermalVoltage > 1e-6) ? ctx.thermalVoltage : V_THERMAL_300K;
+    double vtBase = getEffectiveThermalVoltage(globalVt);
+    double T = getEffectiveTempC(ctx.ambientTempCelsius) + 273.15;
     double tempRatio = std::max(T / T0, 0.1);
 
     double isTemp = Is * std::pow(tempRatio, XTI) *
@@ -1265,9 +1301,22 @@ double VbicBjtAdvanced::calculateCurrent(const SimulationContext& simCtx, MnaInd
     double vbe = sig * (vB - vE);
     double vbc = sig * (vB - vC);
 
-    double vt  = Nf * V_THERMAL_300K;
-    double vtr = Nr * V_THERMAL_300K;
-    double safe_Is = std::max(Is, 1e-20);
+    constexpr double T0    = 300.15;      // Nominal 27°C in Kelvin
+    constexpr double EG_SI = 1.11;        // Silicon bandgap energy (eV)
+    constexpr double XTI   = 3.0;         // Saturation current temperature exponent
+    constexpr double XTB   = 1.5;         // Forward/reverse beta temperature exponent
+
+    double vtBase = getEffectiveThermalVoltage(V_THERMAL_300K);
+    double T = getEffectiveTempC(27.0) + 273.15;
+    double tempRatio = std::max(T / T0, 0.1);
+
+    double isTemp = Is * std::pow(tempRatio, XTI) *
+                    std::exp((EG_SI / V_THERMAL_300K) - (EG_SI / vtBase));
+    double brTemp = 50.0 * std::pow(tempRatio, XTB);
+
+    double vt  = Nf * vtBase;
+    double vtr = Nr * vtBase;
+    double safe_Is = std::max(isTemp, 1e-20);
 
     // 3. Numerical Clamping Layer to eliminate exponential overflow risks during unstable solver sweeps
     double vcrit_f = vt * std::log(vt / (std::sqrt(2.0) * safe_Is));

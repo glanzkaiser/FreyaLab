@@ -9,3 +9,40 @@ L1 5 0 10m
 R4 5 0 50
 D1 4 1
 M1 5 4 0 nmos
+
+
+* --- 1. SYSTEM POWER & MAIN FORCING STIMULUS ---
+VCC net_vcc GND 5.0
+VIN net_in  GND 5.0
+U1 net_gate1 net_in NOT
+R_PullUp1 net_vcc net_out1 470
+C_Load1   net_out1 GND     10.0u
+R_Base1   net_gate1 net_b1 1.0k
+Q1        net_out1 net_b1 GND NPN
+U2 net_gate2 net_out1 NOT
+R_PullUp2 net_vcc net_out2 470
+C_Load2   net_out2 GND     10.0u
+R_Base2   net_gate2 net_b2 1.0k
+Q2        net_out2 net_b2 GND NPN
+
+* ============================================================================
+* FreyaLab Multi-Transistor 3D-IC Hotspot & IR-Drop Benchmark Netlist
+* Produces two distinct thermal plumes:
+*   - Hotspot A (High-Power): M1 (14nm FinFET Driver) + R_Load1
+*   - Hotspot B (Moderate-Power): Q1 (VBIC NPN Power Stage) + R_Load2
+* ============================================================================
+
+* Hotspot netlist
+VDD   vdd   GND  DC 1.8
+VBIAS vbias GND  DC 1.35
+R_PG1 vdd   vdd_core1 0.8
+R_PG2 vdd   vdd_core2 1.2
+R_Load1 vdd_core1 drain_m1  12.0
+M1      drain_m1  vbias     GND FINFET
+R_Base  vbias     base_q1   450.0
+R_Load2 vdd_core2 coll_q1   35.0
+Q1      coll_q1   base_q1   GND NPN
+D1      coll_q1   vdd_core2
+C_Dec1  vdd_core1 GND       100.0n
+C_Dec2  vdd_core2 GND       100.0n
+

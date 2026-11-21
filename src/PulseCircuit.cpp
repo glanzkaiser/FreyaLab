@@ -14,6 +14,7 @@
 
 PulseCircuit::PulseCircuit(Netlist& netlistInstance) : netlist(netlistInstance) {}
 
+
 bool PulseCircuit::isPulseCircuit() {
     if (netlist.getTotalSystemSize() == 0) {
         netlist.buildSparsityPattern();
@@ -23,12 +24,23 @@ bool PulseCircuit::isPulseCircuit() {
     netlist.inspectComponents([&](const Component& comp, MnaIndex extraIdx) {
         (void)extraIdx;
         ComponentType cType = comp.getType();
-        if (cType == ComponentType::DIGITAL_IC ||
-            cType == ComponentType::MOSFET ||
-            cType == ComponentType::FINFET ||
-            cType == ComponentType::RIBBONFET ||
-            cType == ComponentType::GAA_FET ||
-            cType == ComponentType::BJT) {
+        if (cType == ComponentType::VOLTAGE_SOURCE) {
+            if (const auto* vSrc = dynamic_cast<const VoltageSource*>(&comp)) {
+                if (vSrc->isPulse) {
+                    hasPulseFeatures = true;
+                }
+            }
+        } else if (cType == ComponentType::DIGITAL_IC ||
+                   cType == ComponentType::PWM_CONTROLLER ||
+                   cType == ComponentType::MOSFET ||
+                   cType == ComponentType::FINFET ||
+                   cType == ComponentType::RIBBONFET ||
+                   cType == ComponentType::GAA_FET ||
+                   cType == ComponentType::BJT ||
+                   cType == ComponentType::IGBT ||
+                   cType == ComponentType::THYRISTOR_DEVICE ||
+                   cType == ComponentType::CAPACITOR ||
+                   cType == ComponentType::INDUCTOR) {
             hasPulseFeatures = true;
         }
     });

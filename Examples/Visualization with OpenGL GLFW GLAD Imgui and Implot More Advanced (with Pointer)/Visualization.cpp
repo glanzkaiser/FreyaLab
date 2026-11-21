@@ -5,7 +5,10 @@
 #include "freyalab/DCCircuit.h"
 #include "freyalab/PulseCircuit.h"
 #include "freyalab/ACCircuit.h"
+#include "freyalab/ElectroThermal.h"
 #include "freyalab/LogicGates.h"
+#include "freyalab/NoiseCircuit.h"
+#include "freyalab/BSIM.h"
 #include <freyalab/glad/glad.h>
 #include <GLFW/glfw3.h>
 #include "freyalab/imgui/imgui.h"
@@ -1098,6 +1101,192 @@ void FreyaLabVisualizer::executeActiveSimulation() {
     } // <--- End of "else if (analysisTypeActive == 2)"
 } // <--- End of "FreyaLabVisualizer::executeActiveSimulation()"
 
+
+// ============================================================================
+// ELECTRO-THERMAL JET COLORMAP & ISOMETRIC 3D DIE HEAT-MAP RENDERER
+// ============================================================================
+static ImU32 evaluateThermalJetColor(double tNorm, float alpha = 1.0f) {
+    float t = static_cast<float>(std::max(0.0, std::min(1.0, tNorm)));
+    float r = std::max(0.0f, std::min(1.0f, 1.5f - std::abs(4.0f * t - 3.0f)));
+    float g = std::max(0.0f, std::min(1.0f, 1.5f - std::abs(4.0f * t - 2.0f)));
+    float b = std::max(0.0f, std::min(1.0f, 1.5f - std::abs(4.0f * t - 1.0f)));
+    return IM_COL32(static_cast<int>(r * 255.0f),
+                    static_cast<int>(g * 255.0f),
+                    static_cast<int>(b * 255.0f),
+                    static_cast<int>(alpha * 255.0f));
+}
+
+static void renderIsometricThermalDieMap(
+    ImDrawList* drawList,
+    const ImVec2& canvasOrigin,
+    const ImVec2& canvasSize,
+    const std::vector<double>& sliceTempK,
+    int nx, int ny,
+    double minK, double maxK,
+    float yawDeg, float pitchDeg, float heightExaggeration,
+    const std::vector<ThermalHeatSource>& dieBlocks)
+{
+    if (!drawList || sliceTempK.size() < static_cast<size_t>(nx * ny) || nx < 2 || ny < 2) return;
+
+    double spanK = std::max(maxK - minK, 1e-3);
+    float yawRad   = yawDeg * static_cast<float>(M_PI) / 180.0f;
+    float pitchRad = pitchDeg * static_cast<float>(M_PI) / 180.0f;
+    float cosY = std::cos(yawRad), sinY = std::sin(yawRad);
+    float sinP = std::sin(pitchRad), cosP = std::cos(pitchRad);
+
+    float scale = std::min(canvasSize.x * 0.48f, canvasSize.y * 0.58f);
+    ImVec2 center(canvasOrigin.x + canvasSize.x * 0.45f, canvasOrigin.y + canvasSize.y * 0.56f);
+
+    // Project normalized 3D die coordinate (u in [-0.5, 0.5], v in [-0.5, 0.5], z >= 0) to 2D screen
+    auto project3D = [&](float u, float v, float z) -> ImVec2 {
+        float rx = u * cosY - v * sinY;
+        float ry = u * sinY + v * cosY;
+        float sx = center.x + rx * scale * 1.45f;
+        float sy = center.y + (ry * sinP - z * cosP) * scale;
+        return ImVec2(sx, sy);
+    };
+
+    auto sampleTempNorm = [&](int ix, int iy) -> double {
+        int cx = std::max(0, std::min(ix, nx - 1));
+        int cy = std::max(0, std::min(iy, ny - 1));
+        return (sliceTempK[cy * nx + cx] - minK) / spanK;
+    };
+
+    // 1. Render Substrate / Package Base Extruded Side Skirts (for 3D slab depth like RedHawk-SC)
+    float slabThick = 0.032f;
+    ImVec2 b00 = project3D(-0.5f, -0.5f, 0.0f);
+    ImVec2 b10 = project3D( 0.5f, -0.5f, 0.0f);
+    ImVec2 b11 = project3D( 0.5f,  0.5f, 0.0f);
+    ImVec2 b01 = project3D(-0.5f,  0.5f, 0.0f);
+
+    ImVec2 d00 = project3D(-0.5f, -0.5f, -slabThick);
+    ImVec2 d10 = project3D( 0.5f, -0.5f, -slabThick);
+    ImVec2 d11 = project3D( 0.5f,  0.5f, -slabThick);
+    ImVec2 d01 = project3D(-0.5f,  0.5f, -slabThick);
+
+    drawList->AddQuadFilled(b01, b11, d11, d01, IM_COL32(70, 95, 110, 230));
+    drawList->AddQuadFilled(b10, b11, d11, d10, IM_COL32(50, 75, 90, 230));
+    drawList->AddQuadFilled(b00, b01, d01, d00, IM_COL32(55, 80, 95, 230));
+
+    // 2. Painter's Algorithm Back-to-Front Isometric FVM Surface Mesh
+    struct QuadCell {
+        int ix, iy;
+        float depth;
+    };
+    std::vector<QuadCell> cells;
+    cells.reserve((nx - 1) * (ny - 1));
+    for (int iy = 0; iy < ny - 1; ++iy) {
+        for (int ix = 0; ix < nx - 1; ++ix) {
+            float u = (static_cast<float>(ix) + 0.5f) / (nx - 1) - 0.5f;
+            float v = (static_cast<float>(iy) + 0.5f) / (ny - 1) - 0.5f;
+            float depth = u * sinY + v * cosY;
+            cells.push_back({ ix, iy, depth });
+        }
+    }
+    std::sort(cells.begin(), cells.end(), [](const QuadCell& a, const QuadCell& b) {
+        return a.depth < b.depth;
+    });
+
+    for (const auto& cell : cells) {
+        int ix = cell.ix;
+        int iy = cell.iy;
+
+        float u0 = static_cast<float>(ix) / (nx - 1) - 0.5f;
+        float u1 = static_cast<float>(ix + 1) / (nx - 1) - 0.5f;
+        float v0 = static_cast<float>(iy) / (ny - 1) - 0.5f;
+        float v1 = static_cast<float>(iy + 1) / (ny - 1) - 0.5f;
+
+        double t00 = sampleTempNorm(ix, iy);
+        double t10 = sampleTempNorm(ix + 1, iy);
+        double t11 = sampleTempNorm(ix + 1, iy + 1);
+        double t01 = sampleTempNorm(ix, iy + 1);
+        double tAvg = 0.25 * (t00 + t10 + t11 + t01);
+
+        ImVec2 p00 = project3D(u0, v0, static_cast<float>(t00) * heightExaggeration);
+        ImVec2 p10 = project3D(u1, v0, static_cast<float>(t10) * heightExaggeration);
+        ImVec2 p11 = project3D(u1, v1, static_cast<float>(t11) * heightExaggeration);
+        ImVec2 p01 = project3D(u0, v1, static_cast<float>(t01) * heightExaggeration);
+
+        ImU32 fillCol = evaluateThermalJetColor(tAvg, 0.96f);
+        drawList->AddQuadFilled(p00, p10, p11, p01, fillCol);
+        drawList->AddQuad(p00, p10, p11, p01, IM_COL32(20, 25, 35, 45), 0.6f);
+    }
+
+    // 3. Render Raised 3D Silicon Die / Chiplet Blocks over Active Hotspot Components
+    for (const auto& src : dieBlocks) {
+        if (src.powerWatts <= 1e-9) continue;
+        float cu = static_cast<float>(src.normX) - 0.5f;
+        float cv = static_cast<float>(src.normY) - 0.5f;
+        float halfW = 0.085f;
+        float halfH = 0.065f;
+
+        float uA = std::max(-0.48f, cu - halfW);
+        float uB = std::min( 0.48f, cu + halfW);
+        float vA = std::max(-0.48f, cv - halfH);
+        float vB = std::min( 0.48f, cv + halfH);
+
+        int gx = static_cast<int>(src.normX * (nx - 1));
+        int gy = static_cast<int>(src.normY * (ny - 1));
+        double localT = sampleTempNorm(gx, gy);
+        float baseZ = static_cast<float>(localT) * heightExaggeration;
+        float dieH  = 0.036f;
+
+        ImVec2 bot00 = project3D(uA, vA, baseZ);
+        ImVec2 bot10 = project3D(uB, vA, baseZ);
+        ImVec2 bot11 = project3D(uB, vB, baseZ);
+        ImVec2 bot01 = project3D(uA, vB, baseZ);
+
+        ImVec2 top00 = project3D(uA, vA, baseZ + dieH);
+        ImVec2 top10 = project3D(uB, vA, baseZ + dieH);
+        ImVec2 top11 = project3D(uB, vB, baseZ + dieH);
+        ImVec2 top01 = project3D(uA, vB, baseZ + dieH);
+
+        ImU32 topCol  = evaluateThermalJetColor(localT, 0.92f);
+        ImU32 sideCol = evaluateThermalJetColor(localT * 0.85, 0.95f);
+        ImU32 edgeCol = IM_COL32(25, 30, 40, 210);
+
+        drawList->AddQuadFilled(bot01, bot11, top11, top01, sideCol);
+        drawList->AddQuadFilled(bot10, bot11, top11, top10, sideCol);
+        drawList->AddQuadFilled(top00, top10, top11, top01, topCol);
+
+        drawList->AddQuad(top00, top10, top11, top01, edgeCol, 1.4f);
+        drawList->AddLine(bot01, top01, edgeCol, 1.2f);
+        drawList->AddLine(bot11, top11, edgeCol, 1.2f);
+        drawList->AddLine(bot10, top10, edgeCol, 1.2f);
+
+        char tag[64];
+        std::snprintf(tag, sizeof(tag), "%s (%.1f mW)", src.componentName.c_str(), src.powerWatts * 1e3);
+        drawList->AddText(ImVec2(top00.x, top00.y - 15.0f), IM_COL32(255, 255, 255, 235), tag);
+    }
+
+    // 4. Render Ansys RedHawk-SC Style Vertical Temperature (K) Jet Colorbar Legend
+    float barX = canvasOrigin.x + 18.0f;
+    float barY = canvasOrigin.y + canvasSize.y - 155.0f;
+    float barW = 16.0f;
+    float barH = 120.0f;
+    int numBands = 32;
+
+    drawList->AddText(ImVec2(barX - 4.0f, barY - 22.0f), IM_COL32(240, 245, 255, 255), "Temperature (K)");
+
+    for (int i = 0; i < numBands; ++i) {
+        double tTop = 1.0 - static_cast<double>(i) / numBands;
+        double tBot = 1.0 - static_cast<double>(i + 1) / numBands;
+        float y0 = barY + (barH * i) / numBands;
+        float y1 = barY + (barH * (i + 1)) / numBands;
+        drawList->AddRectFilled(ImVec2(barX, y0), ImVec2(barX + barW, y1),
+                                evaluateThermalJetColor(0.5 * (tTop + tBot), 1.0f));
+    }
+    drawList->AddRect(ImVec2(barX, barY), ImVec2(barX + barW, barY + barH), IM_COL32(220, 225, 235, 220), 0.0f, 0, 1.0f);
+
+    for (int tick = 0; tick <= 4; ++tick) {
+        double frac = 1.0 - (0.25 * tick);
+        double tempVal = minK + frac * (maxK - minK);
+        float ty = barY + (barH * tick) / 4.0f - 6.0f;
+        char label[32];
+        std::snprintf(label, sizeof(label), "%.2e", tempVal);
+        drawList->AddText(ImVec2(barX + barW + 7.0f, ty), IM_COL32(230, 235, 245, 255), label);
+    }
+}
 
 // ============================================================================
 // MAIN REVOLUTIONARY GUI GRAPHICAL INTEGRATION WORKSPACE LOOP
@@ -2427,59 +2616,8 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
                 ImGui::EndTabItem();
             }
 
-            // TAB 10: HOLISTIC COMPLEX IMPEDANCE Z-PLANE (MNA SOLVER)
-            if (ImGui::BeginTabItem("Holistic Impedance Z-Plane")) {
-                double inputR = 0.0;
-                double inputX = 0.0;
-                double magnitudeZ = 0.0;
-                double phaseRad = 0.0;
+            
 
-                if (netlistPtr && analysisTypeActive == 2 && !plotFrequencies.empty()) {
-                    double vMag = static_cast<double>(stimAcMag);
-                    double vPhase = static_cast<double>(stimAcPhase) * M_PI / 180.0;
-                    std::complex<double> vSourcePhasor(vMag * std::cos(vPhase), vMag * std::sin(vPhase));
-                    std::complex<double> complexPowerS(plotActivePowerP, plotReactivePowerQ); // 2. Daya kompleks S = P + jQ
-		    // 3. Arus sumber eksak dari S = V * I*  =>  I = (S / V)*
-		    std::complex<double> iSourcePhasor = (vMag > 1e-12)
-			    ? std::conj(complexPowerS / vSourcePhasor)
-			    : std::complex<double>(0.0, 0.0);
-
-                    // 4. Impedansi input Z = V / I (sudut fasa sumber otomatis saling meniadakan)
-  		    std::complex<double> inputImpedanceZ = (std::abs(iSourcePhasor) > 1e-12)
-			    ? (vSourcePhasor / iSourcePhasor)
-			    : std::complex<double>(0.0, 0.0);
-                    inputR = inputImpedanceZ.real();
-                    inputX = inputImpedanceZ.imag();
-                    magnitudeZ = std::abs(inputImpedanceZ);
-                    phaseRad = std::arg(inputImpedanceZ);
-                }
- 	        float plotHeight = std::max(120.0f, ImGui::GetContentRegionAvail().y - 85.0f);
-
-                if (ImPlot::BeginPlot("##holistic_z_plane_plot", ImVec2(-1.0f, plotHeight), ImPlotFlags_Equal)) {
-                    ImPlot::SetupAxes("Resistance R (Ohms)", "Reactance X (Ohms)");
-                    double zX[] = { 0.0, inputR };
-                    double zY[] = { 0.0, inputX };
-                    PlotLineStyled("Impedance Vector (Z)", zX, zY, 2, ImVec4(0.2f, 0.9f, 0.4f, 1.0f), 3.5f);
-
-                    double dotX[] = { inputR };
-                    double dotY[] = { inputX };
-                    PlotScatterStyled("Vector Tip", dotX, dotY, 1, ImPlotMarker_Circle, 4.0f, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-
-                    double pathX[] = { 0.0, inputR, inputR };
-                    double pathY[] = { 0.0, 0.0, inputX };
-                    PlotLineStyled("R-X Boundary Grid", pathX, pathY, 3, ImVec4(1.0f, 1.0f, 1.0f, 0.2f), 1.0f);
-
-                    ImPlot::EndPlot();
-                }
-
-                ImGui::BeginGroup();
-                ImGui::Text("Net Resistance (R) : %.4f Ohms", inputR);
-                ImGui::Text("Net Reactance (X)  : %.4f Ohms", inputX);
-                ImGui::Text("Total Impedance |Z|: %.4f Ohms", magnitudeZ);
-                ImGui::Text("Phase Angle (Deg)  : %.2f deg (%s)", phaseRad * 180.0 / M_PI, (inputX >= 0.0 ? "Inductive Delay (+jX)" : "Capacitive Lead (-jX)"));
-                ImGui::EndGroup();
-                ImGui::EndTabItem();
-            }
 	    // TAB 11: DIGITAL LOGIC ANALYZER (STACKED TIMING DIAGRAM + GATE EVALUATOR)
             if (ImGui::BeginTabItem("Digital Logic Analyzer")) {
                 static float logicThresholdV = 2.5f;
@@ -2588,6 +2726,294 @@ void FreyaLabVisualizer::runInterfaceWorkspace() {
                     }
                     ImPlot::EndPlot();
                 }
+                ImGui::EndTabItem();
+            }
+	    // TAB 12: BSIM-CMG MULTI-GATE ID-VGS & GM CURVE TRACER (WIRED TO BSIM.h)
+            if (ImGui::BeginTabItem("BSIM-CMG Curve Tracer")) {
+                static int geomodIdx = 0;        // 0 = Tri-Gate FinFET (GEOMOD=1), 1 = GAA Nanosheet (GEOMOD=2)
+                static bool isNmos = true;
+                static int nFin = 4;
+                static float gateLengthNm = 14.0f;
+                static float vdsBias = 0.70f;
+                static float vth0 = 0.35f;
+
+                const char* geoItems[] = { "Tri-Gate FinFET (GEOMOD=1)", "GAA Nanosheet / RibbonFET (GEOMOD=2)" };
+                ImGui::SetNextItemWidth(220.0f);
+                ImGui::Combo("3D Architecture", &geomodIdx, geoItems, 2);
+                ImGui::SameLine();
+                ImGui::Checkbox("N-Channel", &isNmos);
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(90.0f);
+                ImGui::SliderInt("NFIN", &nFin, 1, 20);
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(110.0f);
+                ImGui::SliderFloat("L (nm)", &gateLengthNm, 3.0f, 45.0f, "%.1f nm");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(110.0f);
+                ImGui::SliderFloat("V_DS (V)", &vdsBias, 0.05f, 1.20f, "%.2f V");
+
+                // Configure BsimCmgFet device (uses bsimcmg.osdi if loaded, else Phase-1 analytical kernel)
+                BsimCmgParameters bsimParams;
+                bsimParams.geomod = (geomodIdx == 0) ? MultiGateGeometry::FINFET_TRIGATE : MultiGateGeometry::GAA_NANOSHEET;
+                bsimParams.isNChannel = isNmos;
+                bsimParams.NFIN = nFin;
+                bsimParams.L = static_cast<double>(gateLengthNm) * 1e-9;
+                bsimParams.VTH0 = static_cast<double>(vth0);
+                bsimParams.ambientTempCelsius = netlistPtr ? netlistPtr->getTemperatureCelsius() : 27.0;
+
+                ComponentType devSubType = (geomodIdx == 0) ? ComponentType::FINFET : ComponentType::GAA_FET;
+                // Terminals: Drain=Node 1, Gate=Node 2, Source=GND, Bulk=GND
+                BsimCmgFet probeFet("M_TRACE", { NetNode{1}, NetNode{2}, NetNode{0}, NetNode{0} }, devSubType, bsimParams);
+
+                constexpr int sweepPts = 80;
+                std::vector<double> vgsAxis(sweepPts), idsMicroAmp(sweepPts), gmMicroSiemens(sweepPts);
+                double maxIds = 0.0;
+                double peakGm = 0.0;
+
+                std::vector<double> sweepState(2, 0.0);
+                sweepState[0] = static_cast<double>(vdsBias); // V_D = V_DS
+                SimulationContext simCtx{ sweepState, 0.0, 0, 0.0 };
+
+                for (int i = 0; i < sweepPts; ++i) {
+                    double vgs = (1.0 * i) / (sweepPts - 1); // Sweep V_GS from 0.0 V to 1.0 V
+                    vgsAxis[i] = vgs;
+                    sweepState[1] = vgs;
+
+                    double ids = std::abs(probeFet.calculateCurrent(simCtx));
+                    idsMicroAmp[i] = ids * 1e6; // Convert A -> uA
+                    if (idsMicroAmp[i] > maxIds) maxIds = idsMicroAmp[i];
+                }
+
+                // Compute transconductance gm = dI_D / dV_GS via central finite differences
+                for (int i = 0; i < sweepPts; ++i) {
+                    int iPrev = std::max(0, i - 1);
+                    int iNext = std::min(sweepPts - 1, i + 1);
+                    double dV = vgsAxis[iNext] - vgsAxis[iPrev];
+                    double dI = (idsMicroAmp[iNext] - idsMicroAmp[iPrev]) * 1e-6;
+                    gmMicroSiemens[i] = (dV > 1e-9) ? (dI / dV) * 1e6 : 0.0; // uS
+                    if (gmMicroSiemens[i] > peakGm) peakGm = gmMicroSiemens[i];
+                }
+
+                float bsimPlotHeight = std::max(120.0f, ImGui::GetContentRegionAvail().y - 30.0f);
+                float availW = ImGui::GetContentRegionAvail().x;
+
+                // Left Plot: Drain Current ID vs. VGS
+                if (ImPlot::BeginPlot("Transfer Curve I_D vs V_GS", ImVec2(availW * 0.49f, bsimPlotHeight))) {
+                    ImPlot::SetupAxes("Gate-Source Voltage V_GS (V)", "Drain Current I_D (uA)");
+                    PlotLineStyled("I_D (uA)", vgsAxis.data(), idsMicroAmp.data(), sweepPts, ImVec4(0.20f, 0.90f, 0.85f, 1.0f), 2.8f);
+                    ImPlot::EndPlot();
+                }
+
+                ImGui::SameLine();
+
+                // Right Plot: Transconductance gm vs. VGS
+                if (ImPlot::BeginPlot("Transconductance g_m vs V_GS", ImVec2(-1.0f, bsimPlotHeight))) {
+                    ImPlot::SetupAxes("Gate-Source Voltage V_GS (V)", "Transconductance g_m (uS)");
+                    PlotLineStyled("g_m (uS)", vgsAxis.data(), gmMicroSiemens.data(), sweepPts, ImVec4(1.0f, 0.65f, 0.25f, 1.0f), 2.8f);
+                    ImPlot::EndPlot();
+                }
+
+                ImGui::Text("Backend: %s  |  W_eff: %.1f nm  |  I_on (Vgs=1V): %.2f uA  |  Peak g_m: %.2f uS",
+                            probeFet.isUsingOsdi() ? "BSIM-CMG 112.1.0 (OSDI v0.4)" : "Built-In Phase-1 Multi-Gate Kernel",
+                            probeFet.getEffectiveWidth() * 1e9, maxIds, peakGm);
+
+                ImGui::EndTabItem();
+            }
+	    // TAB 13: ELECTRO-THERMAL & IR-DROP 3D FVM HEAT MAP (REDHAWK-SC STYLE)
+            if (ImGui::BeginTabItem("Electro-Thermal 3D Heat Map")) {
+                static ElectroThermalSolver thermalSolver;
+                static int gridPresetIdx = 1;           // 0 = Fast (12x8x2, CSR LU), 1 = Standard (48x32x2, KLU), 2 = Fine (64x48x2, KLU)
+                static int selectedLayerZ = 0;          // 0 = Silicon Die, 1 = Package Spreader
+                static float powerScaleMultiplier = 10.0f; // Scales mW-level test circuits for visible thermal spread
+                static float viewYawDeg = -34.0f;
+                static float viewPitchDeg = 28.0f;
+                static float reliefHeight = 0.06f;
+                static bool autoSolveThermal = true;
+                static double totalDiePowerW = 0.0;
+                static std::vector<ThermalHeatSource> activeHeatSources;
+                static double lastThermalSignature = -1.0;
+
+                const char* gridPresets[] = {
+                    "Fast 12x8x2 (192 cells - CSR LU)",
+                    "Standard 48x32x2 (3072 cells - KLU)",
+                    "Fine 64x48x2 (6144 cells - KLU)"
+                };
+                ImGui::SetNextItemWidth(235.0f);
+                if (ImGui::Combo("Grid", &gridPresetIdx, gridPresets, 3)) {
+                    ThermalGridConfig newCfg = thermalSolver.getConfig();
+                    if (gridPresetIdx == 0) {
+                        newCfg.nx = 12; newCfg.ny = 8;  newCfg.nz = 2;
+                    } else if (gridPresetIdx == 1) {
+                        newCfg.nx = 48; newCfg.ny = 32; newCfg.nz = 2;
+                    } else {
+                        newCfg.nx = 64; newCfg.ny = 48; newCfg.nz = 2;
+                    }
+                    thermalSolver = ElectroThermalSolver(newCfg);
+                    lastThermalSignature = -1.0; // Force immediate re-solve on grid change
+                }
+                ImGui::SameLine();
+
+                const char* layerNames[] = { "Layer 0: Silicon Die (148 W/mK)", "Layer 1: Cu Spreader (380 W/mK)" };
+                ImGui::SetNextItemWidth(205.0f);
+                ImGui::Combo("Layer", &selectedLayerZ, layerNames, 2);
+                ImGui::SameLine();
+
+                ImGui::SetNextItemWidth(100.0f);
+                ImGui::SliderFloat("Gain", &powerScaleMultiplier, 1.0f, 200.0f, "%.1fx");
+                ImGui::SameLine();
+
+                ImGui::SetNextItemWidth(85.0f);
+                ImGui::SliderFloat("Yaw", &viewYawDeg, -85.0f, 85.0f, "%.0f deg");
+                ImGui::SameLine();
+
+                ImGui::SetNextItemWidth(85.0f);
+                ImGui::SliderFloat("Pitch", &viewPitchDeg, 12.0f, 65.0f, "%.0f deg");
+                ImGui::SameLine();
+
+                ImGui::Checkbox("Live", &autoSolveThermal);
+
+                // Helper to compute state signature across MNA voltages, floorplan positions, grid size, and gain
+                const auto& cfg = thermalSolver.getConfig();
+                auto computeThermalSignature = [&]() -> double {
+                    double sig = static_cast<double>(powerScaleMultiplier) * 1e6 +
+                                 static_cast<double>(cfg.nx * 1000 + cfg.ny);
+                    if (netlistPtr && !netlistPtr->getCurrentState().empty()) {
+                        for (double v : netlistPtr->getCurrentState()) {
+                            sig = sig * 1.000003 + std::abs(v);
+                        }
+                        for (const auto& kv : visualComponents) {
+                            sig += 0.01 * (kv.second.posX + kv.second.posY);
+                        }
+                    }
+                    return sig;
+                };
+
+                double currentSignature = computeThermalSignature();
+
+                // Harvest real dissipated Joule power P_k = |V_drop * I| and run Two-Way Electro-Thermal Relaxation
+                if (autoSolveThermal && std::abs(currentSignature - lastThermalSignature) > 1e-12 &&
+                    netlistPtr && netlistPtr->getTotalSystemSize() > 0 && !netlistPtr->getCurrentState().empty())
+                {
+                    activeHeatSources.clear();
+                    totalDiePowerW = 0.0;
+
+                    float minX = 1e30f, maxX = -1e30f, minY = 1e30f, maxY = -1e30f;
+                    for (const auto& kv : visualComponents) {
+                        minX = std::min(minX, kv.second.posX);
+                        maxX = std::max(maxX, kv.second.posX + 120.0f);
+                        minY = std::min(minY, kv.second.posY);
+                        maxY = std::max(maxY, kv.second.posY + 60.0f);
+                    }
+                    float spanX = std::max(maxX - minX, 120.0f);
+                    float spanY = std::max(maxY - minY, 60.0f);
+
+                    const auto& state = netlistPtr->getCurrentState();
+                    SimulationContext simCtx{ state, 0.0, 0, 0.0 };
+
+                    netlistPtr->inspectComponents([&](Component& comp, MnaIndex extraIdx) {
+                        ComponentType cType = comp.getType();
+                        if (cType == ComponentType::VOLTAGE_SOURCE || cType == ComponentType::AC_SOURCE_DEVICE) return;
+
+                        double vDrop = comp.calculateVoltageDrop(state);
+                        double current = comp.calculateCurrent(simCtx, extraIdx);
+                        double dissPower = std::abs(vDrop * current) * static_cast<double>(powerScaleMultiplier);
+
+                        if (dissPower > 1e-9) {
+                            double nx = 0.5, ny = 0.5;
+                            auto it = visualComponents.find(comp.getName());
+                            if (it != visualComponents.end()) {
+                                nx = 0.12 + 0.76 * ((it->second.posX + 60.0f - minX) / spanX);
+                                ny = 0.12 + 0.76 * ((it->second.posY + 30.0f - minY) / spanY);
+                            }
+                            activeHeatSources.push_back({ comp.getName(), nx, ny, dissPower, 0 });
+                            totalDiePowerW += dissPower;
+                        }
+                    });
+
+                    // Two-Way Electro-Thermal Relaxation Loop (Electrical MNA <-> 3D Thermal FVM)
+                    constexpr int maxElectroThermalIters = 4;
+                    constexpr double relaxAlpha = 0.7;
+
+                    for (int etIter = 0; etIter < maxElectroThermalIters; ++etIter) {
+                        // 1. Solve 3D FVM thermal field G_th * dT = P from current electrical power
+                        thermalSolver.solveSteadyStateThermal(activeHeatSources);
+
+                        // 2. Feed solved voxel temperatures T(x, y, 0) back into each component
+                        for (const auto& src : activeHeatSources) {
+                            double solvedTempK = thermalSolver.sampleTemperatureAtK(src.normX, src.normY, 0);
+                            double solvedTempC = solvedTempK - 273.15;
+
+                            netlistPtr->inspectComponents([&](Component& comp, MnaIndex) {
+                                if (comp.getName() == src.componentName) {
+                                    double prevTempC = comp.getEffectiveTempC(netlistPtr->getTemperatureCelsius());
+                                    double dampedTempC = prevTempC + relaxAlpha * (solvedTempC - prevTempC);
+                                    comp.setLocalJunctionTempC(dampedTempC);
+                                }
+                            });
+                        }
+
+                        // 3. Re-solve DC / Operating-Point Electrical MNA with updated junction temperatures
+                        DCCircuit coupledDcSolver(*netlistPtr);
+                        coupledDcSolver.solveMna();
+
+                        // 4. Recompute updated Joule power dissipation P_k = |V_drop * I|
+                        const auto& updatedState = netlistPtr->getCurrentState();
+                        SimulationContext updatedCtx{ updatedState, 0.0, 0, 0.0 };
+                        totalDiePowerW = 0.0;
+
+                        for (auto& src : activeHeatSources) {
+                            netlistPtr->inspectComponents([&](Component& comp, MnaIndex extraIdx) {
+                                if (comp.getName() == src.componentName) {
+                                    double vDrop = comp.calculateVoltageDrop(updatedState);
+                                    double current = comp.calculateCurrent(updatedCtx, extraIdx);
+                                    src.powerWatts = std::abs(vDrop * current) * static_cast<double>(powerScaleMultiplier);
+                                    totalDiePowerW += src.powerWatts;
+                                }
+                            });
+                        }
+                    }
+
+                    // Lock post-relaxation signature so KLU/LU does not re-run every 60 FPS frame
+                    lastThermalSignature = computeThermalSignature();
+                } else if (!autoSolveThermal && netlistPtr) {
+                    netlistPtr->inspectComponents([](Component& comp, MnaIndex) {
+                        comp.clearLocalJunctionTempC();
+                    });
+                }
+
+                ImVec2 avail = ImGui::GetContentRegionAvail();
+                ImVec2 canvasSize(avail.x, std::max(140.0f, avail.y - 24.0f));
+                ImVec2 canvasPos = ImGui::GetCursorScreenPos();
+
+                ImDrawList* drawList = ImGui::GetWindowDrawList();
+                drawList->AddRectFilled(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y),
+                                        IM_COL32(28, 32, 42, 255), 4.0f);
+                drawList->AddRect(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y),
+                                  IM_COL32(70, 80, 100, 255), 4.0f);
+
+                std::vector<double> sliceK = thermalSolver.getLayerSliceK(selectedLayerZ);
+
+                drawList->PushClipRect(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y), true);
+                renderIsometricThermalDieMap(
+                    drawList, canvasPos, canvasSize,
+                    sliceK, cfg.nx, cfg.ny,
+                    thermalSolver.getMinTempK(), thermalSolver.getMaxTempK(),
+                    viewYawDeg, viewPitchDeg, reliefHeight,
+                    activeHeatSources
+                );
+                drawList->PopClipRect();
+
+                ImGui::Dummy(canvasSize);
+                int totalVoxels = cfg.nx * cfg.ny * cfg.nz;
+                const char* thermalBackend = (totalVoxels >= 300) ? "BTF+AMD KLU" : "Left-Looking CSR LU";
+                ImGui::Text("3D FVM Grid: %dx%dx%d [%s]  |  Die Power: %.2f mW  |  T_min: %.2f K  |  Peak T_max: %.2f K (+%.2f K)",
+                            cfg.nx, cfg.ny, cfg.nz,
+                            thermalBackend,
+                            totalDiePowerW * 1e3,
+                            thermalSolver.getMinTempK(),
+                            thermalSolver.getMaxTempK(),
+                            thermalSolver.getMaxTempK() - cfg.ambientTempK);
+
                 ImGui::EndTabItem();
             }
 

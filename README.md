@@ -92,6 +92,9 @@ Mixed-signal example:
 
 <img src="https://github.com/glanzkaiser/FreyaLab/blob/main/images/FreyaLabMixedSignal.gif" width="60%">
 
+Electro-Thermal example:
+
+<img src="https://github.com/glanzkaiser/FreyaLab/blob/main/images/FreyaLabElectroThermal.gif" width="60%">
 
 ## 🗺️ Roadmap
 

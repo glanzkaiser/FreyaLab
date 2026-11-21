@@ -394,7 +394,9 @@ void BsimCmgFet::stamp(MnaMatrixContext& ctx) {
         }
     }
 
-    DefaultOsdiSimParas simEnv(params.ambientTempCelsius);
+    double localTempC = getEffectiveTempC(params.ambientTempCelsius);
+    DefaultOsdiSimParas simEnv(localTempC);
+
     OsdiSimInfo simInfo{};
     simInfo.paras      = simEnv.paras;
     simInfo.abstime    = ctx.time;
@@ -673,7 +675,8 @@ double BsimCmgFet::calculateCurrent(const SimulationContext& simCtx, MnaIndex ex
         std::vector<uint8_t> modCopy  = modelData;
         std::vector<double> dummyState(osdiDesc->num_states, 0.0);
 
-        DefaultOsdiSimParas simEnv(params.ambientTempCelsius);
+        double localTempC = getEffectiveTempC(params.ambientTempCelsius);
+        DefaultOsdiSimParas simEnv(localTempC);
         OsdiSimInfo simInfo{};
         simInfo.paras      = simEnv.paras;
         simInfo.abstime    = 0.0;
@@ -761,7 +764,7 @@ void BsimCmgFet::evaluatePhase1Physics(double vgs, double vds,
     constexpr double BEX      = -1.5;        // Phonon mobility temperature exponent
     constexpr double VSAT_EXP = -0.5;        // Saturation velocity temperature exponent
 
-    const double T         = params.ambientTempCelsius + 273.15;
+    const double T         = getEffectiveTempC(params.ambientTempCelsius) + 273.15;
     const double tempRatio = std::max(T / T0, 0.1);
     const double vtTemp    = V_THERMAL_300K * tempRatio;
     const double u0Temp    = params.U0 * std::pow(tempRatio, BEX);

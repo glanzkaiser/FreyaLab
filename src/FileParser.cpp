@@ -960,13 +960,42 @@ void FileParser::parseNetlistFile(const std::string& filename, Netlist& netlist)
                 }
             }
 	    // =================================================================
-            // RESISTOR PARSING: Rname N1 N2 Value_or_{Expr}
+            // RESISTOR PARSING: Rname N1 N2 Value_or_{Expr} [TC1=val_or_{Expr}]
             // =================================================================
             else if (compTypeIndicator == 'r' && tokens.size() >= 4) {
                 std::vector<NetNode> nodes = parseNodes(tokens, 2, netlist);
                 size_t valIdx = 3;
                 double val = evaluateExpression(extractBracedExpr(tokens, valIdx));
-                netlist.addComponent(std::make_shared<Resistor>(compName, nodes, val));
+
+                auto resistor = std::make_shared<Resistor>(compName, nodes, val);
+
+                // Parse optional trailing parameters (e.g., TC1=3.9e-3 or TC1={expr})
+                while (valIdx < tokens.size()) {
+                    std::string param = tokens.at(valIdx);
+                    std::string upperParam = param;
+                    std::transform(upperParam.begin(), upperParam.end(), upperParam.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+
+                    if (upperParam.rfind("TC1=", 0) == 0) {
+                        std::string rhs = param.substr(4);
+                        if (!rhs.empty()) {
+                            // Handle inline TC1=3.9e-3 or TC1={expr}
+                            std::vector<std::string> subTokens = { rhs };
+                            for (size_t k = valIdx + 1; k < tokens.size() && rhs.find('{') != std::string::npos && rhs.find('}') == std::string::npos; ++k) {
+                                subTokens.push_back(tokens.at(k));
+                                valIdx = k;
+                            }
+                            size_t subIdx = 0;
+                            double tc1Val = evaluateExpression(extractBracedExpr(subTokens, subIdx));
+                            resistor->setTc1(tc1Val);
+                        }
+                        valIdx++;
+                    } else {
+                        valIdx++;
+                    }
+                }
+
+                netlist.addComponent(resistor);
             }
             // =================================================================
             // VOLTAGE SOURCE PARSING:
